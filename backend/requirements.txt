@@ -61,3 +61,5 @@ langdetect
 sentencepiece
 indicnlp
 sacremoses
+flask-login
+flask-bcrypt
