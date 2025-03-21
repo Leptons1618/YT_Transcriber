@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+import traceback  # Add this import
 
 # Third-Party Libraries
 from flask import Flask, request, jsonify, send_from_directory
@@ -16,16 +17,29 @@ import nltk
 from config import logger, active_jobs, transcription_logs, CONFIG_FILE
 from modules.utils import ensure_nltk_resources
 from modules.transcription import process_video
-from modules.models import load_whisper_model, verify_faster_whisper_model, load_summarizer, save_app_config, load_app_config
+from modules.models import load_whisper_model, verify_faster_whisper_model, load_summarizer, save_app_config, load_app_config, get_available_summarizers
 from modules.notion import export_to_notion
 from modules.summarization import generate_notes
+
+# Add these imports
+from auth import init_auth
+from flask_login import login_required, current_user
 
 # Ensure required NLTK resources are available
 ensure_nltk_resources()
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='../frontend/build')
-CORS(app)
+
+# Fix CORS configuration
+CORS(app, 
+     supports_credentials=True, 
+     resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+     allow_headers=["Content-Type", "Authorization"],
+     expose_headers=["Content-Type", "Authorization"])
+
+# Initialize authentication
+init_auth(app)
 
 # Remove the automatic model loading at startup
 # def initialize_models():
@@ -40,19 +54,29 @@ logger.info("Loading application configuration")
 app_config = load_app_config()
 logger.info(f"Configuration loaded: {app_config}")
 
+# Define YouTube pattern at module level so it's available to all functions
+import re
+youtube_pattern = re.compile(r'^(https?://)?(www\.)?(youtube\.com/(watch\?v=|v/|embed/|shorts/)|youtu\.be/)')
+
+# Add login_required decorator to routes that need protection
 @app.route('/api/transcribe', methods=['POST'])
+@login_required
 def transcribe_video():
     """API endpoint to start transcription of a YouTube video"""
     try:
+        # Debug request content
+        logger.info(f"Transcribe request received from user: {current_user.username}")
         data = request.json
-        youtube_url = data.get('youtube_url')  # Note that this might be 'url' in your code
+        logger.info(f"Request data: {data}")
+        
+        youtube_url = data.get('youtube_url')
         model_type = data.get('model_type', 'whisper')
         model_size = data.get('model_size', 'medium')
-        language = data.get('language')  # Add language parameter
+        language = data.get('language')
         
-        # Improved validation for YouTube URLs
-        import re
-        youtube_pattern = re.compile(r'^(https?://)?(www\.)?(youtube\.com/(watch\?v=|v/|embed/|shorts/)|youtu\.be/)')
+        logger.info(f"Processing video: {youtube_url} with {model_type}/{model_size}, language: {language}")
+        
+        # Improved validation for YouTube URLs - using the pattern defined at module level
         if not youtube_url or not youtube_pattern.match(youtube_url):
             return jsonify({"error": "Invalid YouTube URL"}), 400
             
@@ -66,7 +90,8 @@ def transcribe_video():
             "created_at": time.time(),
             "model_type": model_type,
             "model_size": model_size,
-            "language": language  # Store language in job config
+            "language": language,
+            "user_id": current_user.id  # Store user ID with job
         }
         
         # Start processing in a separate thread
@@ -79,34 +104,106 @@ def transcribe_video():
         
     except Exception as e:
         logger.error(f"Error starting transcription: {str(e)}")
-        return jsonify({"error": "Failed to start transcription job"}), 500
+        logger.exception(e)  # Log full traceback
+        return jsonify({"error": f"Failed to start transcription job: {str(e)}"}), 500
 
 @app.route('/api/load_model', methods=['POST'])
-def load_model_config():
-    data = request.json
-    model_type = data.get('model_type', 'whisper')
-    model_size = data.get('model_size', 'medium')
-    summarizer_model = data.get('summarizer_model')
+@login_required
+def load_model():
+    try:
+        logger.info(f"Load model request received from user: {current_user.username}")
+        data = request.json
+        logger.debug(f"Request data: {data}")
+        
+        model_type = data.get('model_type', app_config.get('model_type'))
+        model_size = data.get('model_size', app_config.get('model_size'))
+        summarizer_model = data.get('summarizer_model', app_config.get('summarizer_model'))
+        
+        logger.info(f"Loading model: type={model_type}, size={model_size}, summarizer={summarizer_model}")
+        
+        # Save configuration
+        save_app_config(model_type, model_size, summarizer_model, app_config.get('theme', 'light'))
+        
+        # Load summarizer model
+        logger.info(f"Loading summarization model: {summarizer_model}")
+        try:
+            # Get the full model name
+            available_summarizers = get_available_summarizers()
+            
+            if summarizer_model in available_summarizers and 'name' in available_summarizers[summarizer_model]:
+                full_model_name = available_summarizers[summarizer_model]['name']
+                logger.info(f"Using full model name: {full_model_name}")
+                
+                from transformers import pipeline
+                summarizer = pipeline("summarization", model=full_model_name)
+                
+                # Import from model_registry to avoid conflicts
+                from modules.model_registry import store_summarizer_model
+                store_summarizer_model(summarizer)
+                logger.info(f"Successfully loaded summarizer model: {full_model_name}")
+            else:
+                logger.error(f"Summarizer model not found: {summarizer_model}")
+        except Exception as e:
+            logger.error(f"Error loading summarizer model: {str(e)}")
+            logger.exception(e)
+        
+        # Load transcription model with enhanced logging
+        success = False
+        message = ""
+        
+        if model_type == "whisper":
+            logger.info(f"Loading Whisper {model_size} model")
+            success, message = load_whisper_model(model_size)
+            logger.info(f"Whisper model loading result: {success}, {message}")
+        elif model_type == "faster-whisper":
+            logger.info(f"Verifying Faster-Whisper {model_size} model")
+            success, message = verify_faster_whisper_model(model_size)
+            logger.info(f"Faster-Whisper model loading result: {success}, {message}")
+        else:
+            logger.error(f"Invalid model type: {model_type}")
+            return jsonify({"error": "Invalid model type"}), 400
+        
+        if not success:
+            logger.error(f"Failed to load model: {message}")
+            return jsonify({
+                'status': 'error',
+                'message': message
+            }), 500
+            
+        # Verify the model is accessible
+        from modules.model_registry import get_transcription_model
+        model = get_transcription_model()
+        if model is None:
+            logger.error("Model verification failed after loading")
+            return jsonify({
+                'status': 'error',
+                'message': 'Model was loaded but cannot be accessed. Try again.'
+            }), 500
+            
+        logger.info("Model loading completed successfully")
+        return jsonify({
+            'status': 'success',
+            'message': message
+        })
     
-    # Save config
-    save_app_config(model_type, model_size, summarizer_model)
-    
-    # Load summarization model
-    load_summarizer(summarizer_model)
-    
-    # Continue with loading the appropriate transcription model
-    if model_type == "whisper":
-        load_whisper_model(model_size)
-    elif model_type == "faster-whisper":
-        verify_faster_whisper_model(model_size)
-    else:
-        return jsonify({"error": "Invalid model type"}), 400
-    
-    return jsonify({"message": f"{model_type.capitalize()} model {model_size} loaded with {summarizer_model} summarizer"}), 200
+    except Exception as e:
+        logger.error(f"Error in load_model: {str(e)}")
+        logger.exception(e)
+        return jsonify({
+            'status': 'error',
+            'message': f'Failed to load model: {str(e)}'
+        }), 500
+
+from modules.model_registry import get_model_status
 
 @app.route('/api/config', methods=['GET'])
 def get_config():
     config_data = load_app_config()
+    
+    # Add model status information from registry
+    model_status = get_model_status()
+    config_data["model_status"] = "loaded" if model_status["transcription_loaded"] else "no model loaded"
+    config_data["summarizer_status"] = "loaded" if model_status["summarization_loaded"] else "no summarizer loaded"
     
     # Add available summarizers to the response
     from modules.models import get_available_summarizers
@@ -176,6 +273,7 @@ def save_theme():
         return jsonify({"error": f"Failed to save theme: {str(e)}"}), 500
 
 @app.route('/api/job/<job_id>', methods=['GET'])
+@login_required
 def get_job_status(job_id):
     from config import TRANSCRIPT_DIR, NOTES_DIR
     if job_id not in active_jobs:
@@ -205,6 +303,7 @@ def get_job_status(job_id):
     return jsonify(active_jobs[job_id])
 
 @app.route('/api/transcript/<job_id>', methods=['GET'])
+@login_required
 def get_transcript(job_id):
     from config import TRANSCRIPT_DIR
     transcript_path = None
@@ -221,6 +320,7 @@ def get_transcript(job_id):
     return jsonify(transcript_data)
 
 @app.route('/api/notes/<job_id>', methods=['GET'])
+@login_required
 def get_notes(job_id):
     from config import NOTES_DIR
     notes_path = None
@@ -353,6 +453,31 @@ def regenerate_notes(job_id):
     except Exception as e:
         logger.error(f"Error regenerating notes: {str(e)}", exc_info=True)
         return jsonify({"error": f"Failed to regenerate notes: {str(e)}"}), 500
+
+# Add this error handler for unauthorized access
+@app.errorhandler(401)
+def unauthorized(error):
+    return jsonify({
+        'success': False,
+        'error': 'Unauthorized access. Please login again.',
+        'code': 401
+    }), 401
+
+# Add a proper login check endpoint that doesn't require login_required
+@app.route('/api/check_auth', methods=['GET'])
+def check_auth():
+    logger.info(f"Check auth request received. Authenticated: {current_user.is_authenticated}")
+    if current_user.is_authenticated:
+        logger.info(f"User authenticated: {current_user.username}")
+        return jsonify({
+            'authenticated': True,
+            'username': current_user.username
+        })
+    else:
+        logger.info("User not authenticated")
+        return jsonify({
+            'authenticated': False
+        }), 200  # Return 200 even when not authenticated
 
 # Serve React frontend in production
 @app.route('/', defaults={'path': ''})

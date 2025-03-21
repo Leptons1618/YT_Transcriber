@@ -9,89 +9,124 @@ from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer
 from config import logger, SUMMARIZER_MODELS, MODEL_DIR, CONFIG_FILE
 import config
 from modules.utils import get_model_path
+from modules.model_registry import (
+    store_transcription_model, 
+    get_transcription_model,
+    get_transcription_metadata,
+    store_summarizer_model, 
+    get_summarizer_model
+)
 
 # Set CUDA memory allocation configuration - update the existing setting
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
+def set_transcription_model(model):
+    """Store the transcription model globally"""
+    global transcription_model
+    transcription_model = model
+    return model
+
+def get_transcription_model():
+    """Get the currently loaded transcription model"""
+    global transcription_model
+    return transcription_model
+
+def set_summarizer(model):
+    """Store the summarizer model globally"""
+    return store_summarizer_model(model, 'transformer')
+
+def get_summarizer():
+    """Get the currently loaded summarizer model"""
+    global summarizer
+    return summarizer
+
 def load_whisper_model(model_size="medium"):
-    """Load the OpenAI Whisper model"""
-    # Clear GPU memory before loading new model
-    if config.transcription_model is not None:
-        logger.info("Unloading previous Whisper model")
-        del config.transcription_model
-        gc.collect()
-        torch.cuda.empty_cache()
-        time.sleep(1)  # Allow GPU memory to release
-    
-    logger.info(f"Loading Whisper {model_size} model")
-    model_path = get_model_path("whisper")
-    
-    # Load with optimized settings
-    config.transcription_model = whisper.load_model(
-        model_size, 
-        download_root=model_path,
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    )
-    config.current_whisper_model_size = model_size
-    logger.info(f"Completed loading Whisper {model_size} model")
-    return True
+    """Load a Whisper model of the specified size"""
+    try:
+        import whisper
+        logger.info(f"Loading Whisper {model_size} model")
+        model = whisper.load_model(model_size)
+        
+        # Store in registry with detailed logging
+        logger.info(f"Storing Whisper {model_size} model in registry")
+        store_transcription_model(model, 'whisper', model_size)
+        
+        # Test retrieving model using the registry's function
+        test_model = get_transcription_model()
+        if test_model is not None:
+            logger.info(f"Model successfully verified in registry. ID: {id(test_model)}")
+        else:
+            logger.error("Failed to verify model in registry after storage")
+        
+        logger.info(f"Successfully loaded Whisper {model_size} model")
+        return True, f"Loaded Whisper {model_size} model"
+    except Exception as e:
+        logger.error(f"Error loading Whisper model: {str(e)}")
+        logger.exception(e)
+        return False, f"Error loading Whisper model: {str(e)}"
 
 def verify_faster_whisper_model(model_size="medium"):
-    """Verify that a Faster-Whisper model can be loaded"""
+    """Verify a Faster-Whisper model is available and prepare it for later use"""
     try:
+        # Just verify that the model can be loaded
         from faster_whisper import WhisperModel
-        model_path = get_model_path("faster-whisper")
-        logger.info(f"Verifying Faster-Whisper {model_size} model")
         
-        # Just verify the model can be accessed
-        _ = WhisperModel(
-            model_size, 
-            device="cuda", 
-            compute_type="float16", 
-            download_root=model_path,
-            cpu_threads=4
-        )
+        # Setup model options
+        compute_type = "float16" 
+        if model_size in ["tiny", "base"]:
+            compute_type = "int8"
+        
+        logger.info(f"Verifying Faster-Whisper {model_size} model")
+        # Create the model
+        model = WhisperModel(model_size, device="cuda", compute_type=compute_type)
+        
+        # Store in registry with detailed logging
+        logger.info(f"Storing Faster-Whisper {model_size} model in registry")
+        store_transcription_model(model, 'faster-whisper', model_size)
+        
+        # Verify model is retrievable
+        test_model = get_transcription_model()
+        if test_model is not None:
+            logger.info(f"Model successfully verified in registry. ID: {id(test_model)}")
+        else:
+            logger.error("Failed to verify model in registry after storage")
+        
         logger.info(f"Verified Faster-Whisper {model_size} model")
-        return True
+        return True, f"Verified Faster-Whisper {model_size} model"
     except Exception as e:
         logger.error(f"Error verifying Faster-Whisper model: {str(e)}")
-        return False
+        logger.exception(e)
+        return False, f"Error verifying Faster-Whisper model: {str(e)}"
 
 def get_available_summarizers():
-    """Return dict of available summarization models"""
-    available = {
-        # Standard models
-        "bart-large-cnn": {
-            "size": "large", 
-            "description": "High quality English summarization model"
+    """Get available summarizer models"""
+    return {
+        'bart-large-cnn': {
+            'name': 'facebook/bart-large-cnn',
+            'size': '1.6GB',
+            'description': 'High quality but requires more memory'
         },
-        "facebook/bart-large-xsum": {
-            "size": "large", 
-            "description": "Extreme summarization model"
+        'bart-base-cnn': {
+            'name': 'sshleifer/distilbart-cnn-6-6',
+            'size': '680MB',
+            'description': 'Good balance of quality and speed'
         },
-        "google/pegasus-xsum": {
-            "size": "large", 
-            "description": "Abstractive summarization with high coherence"
+        't5-small': {
+            'name': 't5-small',
+            'size': '300MB',
+            'description': 'Fast but less detailed summaries'
         },
-        # Add specialized Indic language models
-        "ai4bharat/IndicBART": {
-            "size": "large", 
-            "description": "Specialized for Indian languages including Hindi",
-            "languages": ["hi"]
+        'flan-t5-small': {
+            'name': 'google/flan-t5-small',
+            'size': '300MB',
+            'description': 'Improved small model with instruction tuning'
         },
-        "google/mt5-base": {
-            "size": "base", 
-            "description": "Optimized for Bengali summarization",
-            "languages": ["bn"]
-        },
-        # Add mBART-large-50 model for multilingual support
-        "facebook/mbart-large-50-one-to-many-mmt": {
-            "size": "large", 
-            "description": "Multilingual model that supports 50 languages",
-            "languages": ["hi", "bn", "fr", "de", "es", "ru", "zh", "ja"]  # Add key languages it supports well
+        'distilbart-xsum': {
+            'name': 'sshleifer/distilbart-xsum-12-1',
+            'size': '400MB',
+            'description': 'Efficient model focused on extreme summarization'
         }
     }
-    return available
 
 def load_summarizer(model_name=None):
     """Load the summarization model"""

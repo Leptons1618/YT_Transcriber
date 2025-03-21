@@ -106,7 +106,9 @@ const TranscriptionView = () => {
     // Poll job status
     const checkStatus = async () => {
       try {
-        const response = await fetch(`http://localhost:5000/api/job/${jobId}`);
+        const response = await fetch(`http://localhost:5000/api/job/${jobId}`, {
+          credentials: 'include'  // Add this line
+        });
         if (response.ok) {
           const data = await response.json();
           setJobStatus(data);
@@ -147,7 +149,9 @@ const TranscriptionView = () => {
     const fetchTranscriptAndNotes = async () => {
       try {
         // Fetch transcript
-        const transcriptResponse = await fetch(`http://localhost:5000/api/transcript/${jobId}`);
+        const transcriptResponse = await fetch(`http://localhost:5000/api/transcript/${jobId}`, {
+          credentials: 'include'  // Add this line
+        });
         if (transcriptResponse.ok) {
           const transcriptData = await transcriptResponse.json();
           setTranscript(transcriptData);
@@ -160,7 +164,9 @@ const TranscriptionView = () => {
         }
         
         // Fetch notes
-        const notesResponse = await fetch(`http://localhost:5000/api/notes/${jobId}`);
+        const notesResponse = await fetch(`http://localhost:5000/api/notes/${jobId}`, {
+          credentials: 'include'  // Add this line
+        });
         if (notesResponse.ok) {
           const notesData = await notesResponse.json();
           setNotes(notesData);
@@ -1316,7 +1322,7 @@ const renderModelSelectorModal = () => {
             Choose a model to generate summaries and key points from your transcript.
             {transcript?.language && transcript.language !== 'en' && (
               <div className="language-notice">
-                <span className="language-icon">🌐</span>
+                <span className="language-icon" role="img" aria-label="Globe">🌐</span>
                 <span>Your transcript is in {getLanguageName(transcript.language)}. Models with a star (★) are optimized for this language.</span>
               </div>
             )}
@@ -1394,7 +1400,9 @@ const renderModelSelectorModal = () => {
 useEffect(() => {
   const fetchSummarizers = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/config');
+      const response = await fetch('http://localhost:5000/api/config', {
+        credentials: 'include'  // Add this line
+      });
       if (response.ok) {
         const data = await response.json();
         if (data.available_summarizers) {

@@ -1,6 +1,7 @@
 import os
 import logging
 import datetime
+import json
 
 # Base paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -77,3 +78,96 @@ os.makedirs(os.path.join(MODEL_DIR, 'summarizers'), exist_ok=True)
 
 # Add path for storing summarizer model
 summarizer_path = None
+
+DEFAULT_CONFIG = {
+    'model_type': 'faster-whisper',
+    'model_size': 'tiny',
+    'summarizer_model': 'bart-large-cnn',
+    'theme': 'light',
+    'available_summarizers': {
+        'bart-large-cnn': {
+            'name': 'facebook/bart-large-cnn',
+            'size': '1.6GB',
+            'description': 'High quality but requires more memory'
+        },
+        'bart-base-cnn': {
+            'name': 'sshleifer/distilbart-cnn-6-6',
+            'size': '680MB',
+            'description': 'Good balance of quality and speed'
+        },
+        't5-small': {
+            'name': 't5-small',
+            'size': '300MB',
+            'description': 'Fast but less detailed summaries'
+        },
+        'flan-t5-small': {
+            'name': 'google/flan-t5-small',
+            'size': '300MB',
+            'description': 'Improved small model with instruction tuning'
+        },
+        'distilbart-xsum': {
+            'name': 'sshleifer/distilbart-xsum-12-1',
+            'size': '400MB',
+            'description': 'Efficient model focused on extreme summarization'
+        }
+    }
+}
+
+def load_config():
+    """Load configuration from config.json"""
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    
+    if not os.path.exists(config_path):
+        save_config(DEFAULT_CONFIG)
+        return DEFAULT_CONFIG.copy()
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            
+        # Ensure all necessary keys are present
+        for key, value in DEFAULT_CONFIG.items():
+            if key not in config:
+                config[key] = value
+                
+        return config
+    except Exception as e:
+        logging.error(f"Error loading config: {e}")
+        return DEFAULT_CONFIG.copy()
+
+def save_config(config):
+    """Save configuration to config.json"""
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    
+    try:
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        logging.info("Configuration saved")
+    except Exception as e:
+        logging.error(f"Error saving config: {e}")
+
+def set_summarizer(new_summarizer):
+    """Set the global summarizer instance"""
+    global summarizer
+    summarizer = new_summarizer
+    return summarizer
+
+def get_transcription_model():
+    """Get the currently loaded transcription model"""
+    global transcription_model
+    return transcription_model
+
+def set_transcription_model(model):
+    """Set the transcription model globally"""
+    global transcription_model
+    transcription_model = model
+
+def get_summarizer():
+    """Get the currently loaded summarizer model"""
+    global summarizer
+    return summarizer
+
+def set_summarizer(model):
+    """Set the summarizer model globally"""
+    global summarizer
+    summarizer = model

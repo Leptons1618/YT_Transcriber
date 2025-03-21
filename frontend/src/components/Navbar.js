@@ -1,53 +1,57 @@
 // src/components/Navbar.js
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import React from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import './Navbar.css';
-// Import sun and moon icons
-import { FiSun, FiMoon } from 'react-icons/fi';
+import { FiSun, FiMoon, FiLogOut } from 'react-icons/fi';
 
-const Navbar = () => {
-  const [theme, setTheme] = useState('light');
-  
-  // Load theme from config when component mounts
-  useEffect(() => {
-    fetch('http://localhost:5000/api/config')
-      .then(res => res.json())
-      .then(data => {
-        if (data.theme) {
-          setTheme(data.theme);
-          document.body.className = data.theme;
-        }
-      })
-      .catch(err => console.error("Error loading theme:", err));
-  }, []);
+const Navbar = ({ theme, setTheme, isAuthenticated, setIsAuthenticated }) => {
+  const navigate = useNavigate();
   
   const toggleTheme = () => {
-    const newTheme = theme === 'light' ? 'dark' : 'light';
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
     setTheme(newTheme);
-    document.body.className = newTheme;
-    
-    // Save theme preference to server
-    fetch('http://localhost:5000/api/save_theme', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ theme: newTheme })
-    }).catch(err => console.error("Error saving theme:", err));
+    localStorage.setItem('theme', newTheme);
+  };
+  
+  const handleLogout = async () => {
+    try {
+      await fetch('http://localhost:5000/api/logout', {
+        credentials: 'include'
+      });
+      setIsAuthenticated(false);
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
   };
 
   return (
     <nav className="navbar">
-      <div className="navbar-brand">
-        <Link to="/" className="logo">
-          YT Transcriber
-        </Link>
-      </div>
-      <div className="navbar-menu">
-        <Link to="/" className="navbar-item">Home</Link>
-        <Link to="/jobs" className="navbar-item">My Transcriptions</Link>
-        {/* Replace emoji with icons */}
-        <button className="theme-toggle" onClick={toggleTheme} title="Toggle Theme">
-          {theme === 'light' ? <FiMoon /> : <FiSun />}
-        </button>
+      <div className="navbar-container">
+        <div className="navbar-brand">
+          <Link to={isAuthenticated ? "/" : "/login"}>
+            <span className="brand-yt">YouTube</span> Transcriber
+          </Link>
+        </div>
+        
+        <div className="navbar-menu">
+          {isAuthenticated && (
+            <>
+              <Link to="/" className="nav-link">Home</Link>
+              <Link to="/jobs" className="nav-link">My Jobs</Link>
+              <button className="logout-button" onClick={handleLogout} title="Logout">
+                <FiLogOut />
+              </button>
+            </>
+          )}
+          <button 
+            className="theme-toggle" 
+            onClick={toggleTheme} 
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <FiSun /> : <FiMoon />}
+          </button>
+        </div>
       </div>
     </nav>
   );

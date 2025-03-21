@@ -10,6 +10,7 @@ from config import logger, active_jobs, transcription_logs, AUDIO_DIR, TRANSCRIP
 from modules.utils import append_transcription_log, formatTime, get_audio_duration, get_model_path
 from modules.summarization import generate_notes
 import config
+from modules.model_registry import get_transcription_model, get_transcription_metadata
 
 def download_youtube_audio(youtube_url, job_id):
     """Download audio from a YouTube video"""
@@ -29,6 +30,87 @@ def download_youtube_audio(youtube_url, job_id):
         ydl.download([youtube_url])
     logger.info(f"Job {job_id}: Audio downloaded successfully")
     return os.path.join(AUDIO_DIR, f"{job_id}.mp3")
+
+def transcribe_audio(audio_path, job_id, language=None):
+    """Transcribe an audio file using the configured model"""
+    try:
+        logger.info(f"Transcribing audio for job {job_id} with language={language}")
+        
+        # Get audio duration
+        from pydub import AudioSegment
+        audio = AudioSegment.from_file(audio_path)
+        duration_seconds = len(audio) / 1000.0
+        logger.info(f"Audio duration: {duration_seconds:.2f} seconds")
+        
+        # Get the transcription model with debug logs
+        logger.info("Attempting to retrieve model from registry")
+        model = get_transcription_model()
+        
+        # Debug logging about the model
+        if model is not None:
+            logger.info(f"Retrieved model from registry. Model ID: {id(model)}")
+        else:
+            logger.error("Model retrieval returned None")
+            
+        metadata = get_transcription_metadata()
+        logger.info(f"Model metadata from registry: {metadata}")
+        
+        if model is None:
+            errorMsg = "No Whisper model loaded. Please configure and load a model first."
+            logger.error(errorMsg)
+            active_jobs[job_id]["status"] = "error"
+            active_jobs[job_id]["error"] = errorMsg
+            raise Exception(errorMsg)
+        
+        # Process based on model type
+        model_type = metadata.get('type')
+        logger.info(f"Processing with model type: {model_type}")
+        
+        if model_type == "whisper":
+            logger.info("Using standard Whisper model for transcription")
+            
+            # Transcribe with Whisper
+            transcript_options = {}
+            if language:
+                transcript_options["language"] = language
+                
+            logger.info(f"Starting Whisper transcription with options: {transcript_options}")
+            result = model.transcribe(audio_path, **transcript_options)
+            logger.info("Whisper transcription completed successfully")
+            
+            # Process result...
+            # ...existing code...
+            
+        elif model_type == "faster-whisper":
+            logger.info("Using Faster-Whisper model for transcription")
+            
+            # Set language if specified
+            language_option = language if language else None
+            logger.info(f"Using language option: {language_option}")
+            
+            # Transcribe with Faster-Whisper
+            logger.info("Starting Faster-Whisper transcription")
+            segments, info = model.transcribe(audio_path, language=language_option)
+            logger.info(f"Faster-Whisper transcription completed. Info: {info}")
+            
+            # Process segments...
+            # ...existing code...
+            
+        else:
+            errorMsg = f"Unknown model type: {model_type}"
+            logger.error(errorMsg)
+            active_jobs[job_id]["status"] = "error"
+            active_jobs[job_id]["error"] = errorMsg
+            raise Exception(errorMsg)
+        
+        # ...existing code...
+        
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {str(e)}")
+        logger.exception(e)  # Log full traceback
+        active_jobs[job_id]["status"] = "error"
+        active_jobs[job_id]["error"] = str(e)
+        raise
 
 def transcribe_audio(audio_path, model_type="whisper", model_size="medium", language=None):
     """Transcribe audio using the specified model and language"""
@@ -142,78 +224,68 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
             logger.error(f"Error in Whisper transcription: {str(e)}")
             raise
 
+# Import our new debug module
+from modules.debug import trace_function, debug_logger
+
+@trace_function  # Add tracing to this function
 def process_video(youtube_url, job_id, language=None):
-    """Main processing function for a video - downloads, transcribes and generates notes"""
+    """Process a YouTube video: download audio, transcribe, then generate notes"""
+    from config import active_jobs, transcription_logs
+    
     try:
-        with threading.Lock():
-            if job_id not in active_jobs:
-                active_jobs[job_id] = {"url": youtube_url, "created_at": time.time()}
-            active_jobs[job_id]["status"] = "downloading"
-            if language:
-                active_jobs[job_id]["language"] = language
-        logger.info(f"Job {job_id}: Downloading audio...")
+        # Update job status to downloading
+        active_jobs[job_id]["status"] = "downloading"
+        transcription_logs[job_id] = []
         
+        debug_logger.info(f"Starting job {job_id} - Downloading video: {youtube_url}")
+        
+        # Download audio function implementation with error handling
         audio_path = download_youtube_audio(youtube_url, job_id)
         
-        with threading.Lock():
-            active_jobs[job_id]["status"] = "transcribing"
-            active_jobs[job_id]["audio_path"] = audio_path
-        logger.info(f"Job {job_id}: Audio downloaded to {audio_path}. Transcribing...")
-        
-        # Retrieve configuration for model
-        model_type = active_jobs[job_id].get("model_type", "whisper")
-        model_size = active_jobs[job_id].get("model_size", "medium")
-        language = active_jobs[job_id].get("language", None)
-        
-        # Transcribe audio based on selected model
-        transcript, segments = transcribe_audio(audio_path, model_type, model_size, language)
-        
-        # Get video metadata BEFORE saving transcript
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
-        
-        # Save transcript including title, channel and language
-        transcript_data = {
-            "text": transcript,
-            "segments": segments,
-            "title": info.get('title', 'Unknown'),
-            "channel": info.get('uploader', 'Unknown'),
-            "youtube_url": youtube_url,
-            "language": language
-        }
-        transcript_path = os.path.join(TRANSCRIPT_DIR, f"{job_id}.json")
-        with open(transcript_path, 'w') as f:
-            json.dump(transcript_data, f)
-        logger.info(f"Job {job_id}: Transcript saved at {transcript_path}")
-        
-        with threading.Lock():
-            active_jobs[job_id]["status"] = "generating_notes"
-            active_jobs[job_id]["transcript_path"] = transcript_path
-        
-        # Generate and save notes with language support
-        notes = generate_notes(transcript, language)
-        notes["title"] = transcript_data["title"]
-        notes_path = os.path.join(NOTES_DIR, f"{job_id}.json")
-        with open(notes_path, 'w') as f:
-            json.dump(notes, f)
-        logger.info(f"Job {job_id}: Notes saved at {notes_path}")
-        
-        with threading.Lock():
-            active_jobs[job_id]["status"] = "complete"
-            active_jobs[job_id]["notes_path"] = notes_path
-            active_jobs[job_id]["title"] = transcript_data["title"]
-            active_jobs[job_id]["channel"] = transcript_data["channel"]
-            active_jobs[job_id]["thumbnail"] = info.get('thumbnail', '')
-        logger.info(f"Job {job_id}: Processing complete")
-    
-    except Exception as e:
-        with threading.Lock():
-            if job_id not in active_jobs:
-                active_jobs[job_id] = {"url": youtube_url, "created_at": time.time()}
+        if not audio_path or not os.path.exists(audio_path):
+            debug_logger.error(f"Failed to download audio for job {job_id}")
             active_jobs[job_id]["status"] = "error"
-            active_jobs[job_id]["error"] = str(e)
-        logger.error(f"Job {job_id}: Error occurred - {str(e)}", exc_info=True)
+            active_jobs[job_id]["error"] = "Failed to download audio"
+            return
+            
+        debug_logger.info(f"Audio downloaded for job {job_id} to {audio_path}")
+        
+        # Update job status to transcribing
+        active_jobs[job_id]["status"] = "transcribing"
+        
+        # Transcribe audio function implementation
+        debug_logger.info(f"Starting transcription for job {job_id} with language={language}")
+        
+        transcript_result = transcribe_audio(audio_path, job_id, language)
+        
+        if not transcript_result:
+            debug_logger.error(f"Failed to transcribe audio for job {job_id}")
+            active_jobs[job_id]["status"] = "error"
+            active_jobs[job_id]["error"] = "Failed to transcribe audio"
+            return
+            
+        debug_logger.info(f"Transcription complete for job {job_id}")
+        
+        # Update job status to generating notes
+        active_jobs[job_id]["status"] = "generating_notes"
+        
+        # Generate notes function implementation
+        debug_logger.info(f"Generating notes for job {job_id}")
+        try:
+            from modules.summarization import generate_notes
+            notes = generate_notes(job_id)
+            debug_logger.info(f"Notes generated for job {job_id}")
+        except Exception as e:
+            debug_logger.error(f"Error generating notes for job {job_id}: {str(e)}")
+            debug_logger.exception(e)
+            # Continue even if notes generation fails
+        
+        # Update job status to complete
+        active_jobs[job_id]["status"] = "complete"
+        debug_logger.info(f"Job {job_id} completed successfully")
+        
+    except Exception as e:
+        debug_logger.error(f"Error processing video for job {job_id}: {str(e)}")
+        debug_logger.exception(e)
+        active_jobs[job_id]["status"] = "error"
+        active_jobs[job_id]["error"] = str(e)

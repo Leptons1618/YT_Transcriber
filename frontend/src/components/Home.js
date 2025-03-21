@@ -4,6 +4,7 @@ import './Home.css';
 // Replace the cog gif import with React Icons imports
 import { FiSettings } from 'react-icons/fi';
 import { FaFileAlt, FaChartBar, FaClock, FaSave } from 'react-icons/fa';
+import { debugLog, debugAuth } from '../utils/debugHelper';
 
 const Home = () => {
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -22,6 +23,8 @@ const Home = () => {
   const [availableSummarizers, setAvailableSummarizers] = useState({});
   const [summarizerStatus, setSummarizerStatus] = useState("no summarizer loaded");
   const [language, setLanguage] = useState(''); // '' means auto-detect
+  const [isLoading, setIsLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
 
   // Enhanced useEffect to fetch model status and configuration on startup
   useEffect(() => {
@@ -53,9 +56,21 @@ const Home = () => {
       .catch(err => console.error("Error loading configuration:", err));
   }, []);
 
+  // Add auth debug on component mount
+  useEffect(() => {
+    debugLog('Home component mounted');
+    debugAuth();
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    
+    // Simplified error logging without localStorage
+    const logError = (message, details) => {
+      console.error("TRANSCRIPTION ERROR:", { message, details });
+      setError(`Error: ${message}`);
+    };
     
     if (!youtubeUrl) {
       setError('Please enter a YouTube URL');
@@ -68,9 +83,22 @@ const Home = () => {
       return;
     }
     
+    // Make sure a model is loaded before submitting
+    if (modelLoadStatus !== "loaded") {
+      setError("Please load a model first before transcribing");
+      return;
+    }
+    
     setIsSubmitting(true);
     
     try {
+      console.log("Sending transcription request with:", {
+        youtube_url: youtubeUrl,
+        model_type: modelType,
+        model_size: modelSize,
+        language: language
+      });
+      
       const response = await fetch('http://localhost:5000/api/transcribe', {
         method: 'POST',
         headers: {
@@ -80,20 +108,47 @@ const Home = () => {
           youtube_url: youtubeUrl,
           model_type: modelType,
           model_size: modelSize,
-          language: language // Add language to the request
+          language: language
         }),
+        credentials: 'include' // Include credentials for auth
       });
       
-      const data = await response.json();
+      console.log("Transcription response status:", response.status);
+      
+      // Handle unauthorized response specifically
+      if (response.status === 401) {
+        logError('Authentication error', { status: 401 });
+        setError('Your session has expired. Please log in again.');
+        setTimeout(() => navigate('/login'), 2000);
+        return;
+      }
+      
+      // Get response text first
+      const responseText = await response.text();
+      console.log("Raw response:", responseText);
+      
+      let data;
+      
+      // Try to parse as JSON, but keep the original text if it fails
+      try {
+        data = JSON.parse(responseText);
+        console.log("Transcription response data:", data);
+      } catch (parseError) {
+        logError('Failed to parse server response', { responseText, parseError: parseError.message });
+        throw new Error(`Server returned invalid JSON: ${responseText.substring(0, 100)}...`);
+      }
       
       if (response.ok) {
-        navigate(`/view/${data.job_id}`);
+        // Navigate to view page when successful
+        navigate(`/job/${data.job_id}`);
       } else {
+        logError(data.error || 'Failed to submit transcription request', data);
         setError(data.error || 'Failed to submit transcription request');
       }
     } catch (err) {
-      setError('Error connecting to server');
-      console.error(err);
+      logError('Error connecting to server', { message: err.message, stack: err.stack });
+      setError(`Error connecting to server: ${err.message}`);
+      console.error("Full error:", err);
     } finally {
       setIsSubmitting(false);
     }
@@ -136,18 +191,33 @@ const Home = () => {
           model_size: modelSize,
           summarizer_model: summarizerModel 
         }),
+        credentials: 'include'  // Add credentials to the request
       });
+      
+      // Handle unauthorized response
+      if (response.status === 401) {
+        console.log("Authentication failed. Redirecting to login...");
+        setError('Your session has expired. Please log in again.');
+        setTimeout(() => navigate('/login'), 2000);
+        setModelLoadStatus("no model loaded");
+        return;
+      }
+      
       const data = await response.json();
       if (response.ok) {
         console.log(data.message);
         setModelLoadStatus("loaded");
         setSummarizerStatus("loaded");
+        setSuccessMessage(data.message || 'Model loaded successfully');
+        setTimeout(() => setSuccessMessage(''), 5000); // Clear after 5 seconds
       } else {
-        alert('Failed to load the model configuration: ' + data.error);
+        setModelLoadStatus("no model loaded");
+        setError(data.error || 'Failed to load model configuration');
       }
     } catch (err) {
-      console.error(err);
-      alert('Error connecting to server');
+      console.error("Error in saveConfig:", err);
+      setModelLoadStatus("no model loaded");
+      setError(err.message || 'Error connecting to server');
     }
   };
 
@@ -201,6 +271,124 @@ const Home = () => {
     return pattern.test(url.trim());
   };
 
+  // Function to check auth before loading model
+  const checkAndLoadModel = async () => {
+    debugLog('Starting model loading process');
+    debugLog('Current state', { modelType, modelSize, summarizerModel });
+    
+    setIsLoading(true);
+    setError('');
+    
+    try {
+      console.log("Checking authentication...");
+      const authResponse = await fetch('http://localhost:5000/api/check_auth', {
+        credentials: 'include'
+      });
+      
+      console.log("Auth response status:", authResponse.status);
+      const authData = await authResponse.json();
+      console.log("Auth data:", authData);
+      
+      if (!authData.authenticated) {
+        console.log("Not authenticated, redirecting to login");
+        setError('Your session has expired. Please log in again.');
+        setTimeout(() => navigate('/login'), 2000);
+        setIsLoading(false);
+        return;
+      }
+      
+      console.log("Authentication successful, loading model...");
+      
+      // If authenticated, proceed with model loading
+      const loadResponse = await fetch('http://localhost:5000/api/load_model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model_type: modelType,
+          model_size: modelSize,
+          summarizer_model: summarizerModel
+        }),
+        credentials: 'include'
+      });
+      
+      console.log("Load model response status:", loadResponse.status);
+      
+      if (!loadResponse.ok) {
+        const errorText = await loadResponse.text();
+        console.error("Load model error response:", errorText);
+        
+        try {
+          const errorData = JSON.parse(errorText);
+          throw new Error(errorData.message || 'Failed to load model');
+        } catch (parseError) {
+          throw new Error(`Failed to load model: ${errorText || loadResponse.statusText}`);
+        }
+      }
+      
+      const data = await loadResponse.json();
+      console.log("Load model success:", data);
+      
+      setSuccessMessage(data.message || 'Model loaded successfully');
+      setTimeout(() => setSuccessMessage(''), 5000);
+    } catch (err) {
+      console.error('Error in checkAndLoadModel:', err);
+      setError(err.message || 'Error connecting to server');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Add an authentication check function
+  // eslint-disable-next-line no-unused-vars
+  const checkAuthentication = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/check_auth', {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        return data.authenticated;
+      }
+      return false;
+    } catch (error) {
+      console.error('Auth check error:', error);
+      return false;
+    }
+  };
+  
+  // Fetch config when component mounts
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/config', {
+          credentials: 'include'
+        });
+        
+        if (response.ok) {
+          const config = await response.json();
+          setModelType(config.model_type || 'faster-whisper');
+          setModelSize(config.model_size || 'base');
+          setSummarizerModel(config.summarizer_model || 'bart-large-cnn');
+        } else {
+          // Handle non-OK response
+          if (response.status === 401) {
+            // Unauthorized - redirect to login
+            navigate('/login');
+          } else {
+            console.error('Error fetching config:', response.statusText);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch config:', error);
+      }
+    };
+
+    fetchConfig();
+  }, [navigate]);
+
   return (
     <div className="home-container">
       <div className="hero-section">
@@ -238,7 +426,9 @@ const Home = () => {
               <FiSettings className="config-icon" size={24} />
             </button>
           </div>
-          {error && <p className="error-message">{error}</p>}
+          {error && (
+            <p className="error-message">{error}</p>
+          )}
         </form>
 
         {/* Display loading/loaded model status */}
@@ -453,14 +643,14 @@ const Home = () => {
               </div>
             )}
 
-            {/* Keep the model info table */}
-            <div className="model-info-table">
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            {/* Model comparison table */}
+            <div style={{ marginTop: '20px' }}>
+              <h3 style={{ fontSize: '1rem' }}>Model Comparison</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem', marginTop: '10px' }}>
                 <thead>
                   <tr>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Size</th>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Params</th>
-                    <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Multi</th>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>VRAM</th>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Speed</th>
                   </tr>
@@ -469,35 +659,30 @@ const Home = () => {
                   <tr>
                     <td style={{ padding: '4px' }}>tiny</td>
                     <td style={{ padding: '4px' }}>39M</td>
-                    <td style={{ padding: '4px' }}>tiny</td>
                     <td style={{ padding: '4px' }}>~1GB</td>
                     <td style={{ padding: '4px' }}>~10x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>base</td>
                     <td style={{ padding: '4px' }}>74M</td>
-                    <td style={{ padding: '4px' }}>base</td>
                     <td style={{ padding: '4px' }}>~1GB</td>
                     <td style={{ padding: '4px' }}>~7x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>small</td>
                     <td style={{ padding: '4px' }}>244M</td>
-                    <td style={{ padding: '4px' }}>small</td>
                     <td style={{ padding: '4px' }}>~2GB</td>
                     <td style={{ padding: '4px' }}>~4x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>medium</td>
                     <td style={{ padding: '4px' }}>769M</td>
-                    <td style={{ padding: '4px' }}>medium</td>
                     <td style={{ padding: '4px' }}>~5GB</td>
                     <td style={{ padding: '4px' }}>~2x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>turbo</td>
                     <td style={{ padding: '4px' }}>809M</td>
-                    <td style={{ padding: '4px' }}>turbo</td>
                     <td style={{ padding: '4px' }}>~6GB</td>
                     <td style={{ padding: '4px' }}>~8x</td>
                   </tr>
@@ -505,7 +690,6 @@ const Home = () => {
                     <tr>
                       <td style={{ padding: '4px' }}>large</td>
                       <td style={{ padding: '4px' }}>1550M</td>
-                      <td style={{ padding: '4px' }}>large-v3</td>
                       <td style={{ padding: '4px' }}>~10GB</td>
                       <td style={{ padding: '4px' }}>~1x</td>
                     </tr>
@@ -513,6 +697,7 @@ const Home = () => {
                 </tbody>
               </table>
             </div>
+            
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '20px' }}>
               <button 
                 onClick={saveConfig}
@@ -548,6 +733,34 @@ const Home = () => {
           </div>
         </div>
       )}
+
+      {/* Success, error, and loading messages */}
+      {successMessage && (
+        <div className="success-message">
+          {successMessage}
+        </div>
+      )}
+      
+      {error && (
+        <div className="error-message">
+          {error}
+        </div>
+      )}
+      
+      {isLoading && (
+        <div className="loading-indicator">
+          <div className="spinner"></div>
+          <p>Loading model, please wait...</p>
+        </div>
+      )}
+      
+      <button
+        className="load-model-button"
+        onClick={checkAndLoadModel}
+        disabled={isLoading}
+      >
+        {isLoading ? 'Loading...' : 'Load Model'}
+      </button>
     </div>
   );
 };
