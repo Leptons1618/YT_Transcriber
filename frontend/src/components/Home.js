@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './Home.css';
-// Replace the cog gif import with React Icons imports
 import { FiSettings } from 'react-icons/fi';
 import { FaFileAlt, FaChartBar, FaClock, FaSave } from 'react-icons/fa';
 import { debugLog, debugAuth } from '../utils/debugHelper';
@@ -23,7 +22,6 @@ const Home = () => {
   const [availableSummarizers, setAvailableSummarizers] = useState({});
   const [summarizerStatus, setSummarizerStatus] = useState("no summarizer loaded");
   const [language, setLanguage] = useState(''); // '' means auto-detect
-  const [isLoading, setIsLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
 
   // Enhanced useEffect to fetch model status and configuration on startup
@@ -269,75 +267,6 @@ const Home = () => {
     // More comprehensive regex to handle various YouTube URL formats
     const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|v\/|embed\/|shorts\/)|youtu\.be\/)/;
     return pattern.test(url.trim());
-  };
-
-  // Function to check auth before loading model
-  const checkAndLoadModel = async () => {
-    debugLog('Starting model loading process');
-    debugLog('Current state', { modelType, modelSize, summarizerModel });
-    
-    setIsLoading(true);
-    setError('');
-    
-    try {
-      console.log("Checking authentication...");
-      const authResponse = await fetch('http://localhost:5000/api/check_auth', {
-        credentials: 'include'
-      });
-      
-      console.log("Auth response status:", authResponse.status);
-      const authData = await authResponse.json();
-      console.log("Auth data:", authData);
-      
-      if (!authData.authenticated) {
-        console.log("Not authenticated, redirecting to login");
-        setError('Your session has expired. Please log in again.');
-        setTimeout(() => navigate('/login'), 2000);
-        setIsLoading(false);
-        return;
-      }
-      
-      console.log("Authentication successful, loading model...");
-      
-      // If authenticated, proceed with model loading
-      const loadResponse = await fetch('http://localhost:5000/api/load_model', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model_type: modelType,
-          model_size: modelSize,
-          summarizer_model: summarizerModel
-        }),
-        credentials: 'include'
-      });
-      
-      console.log("Load model response status:", loadResponse.status);
-      
-      if (!loadResponse.ok) {
-        const errorText = await loadResponse.text();
-        console.error("Load model error response:", errorText);
-        
-        try {
-          const errorData = JSON.parse(errorText);
-          throw new Error(errorData.message || 'Failed to load model');
-        } catch (parseError) {
-          throw new Error(`Failed to load model: ${errorText || loadResponse.statusText}`);
-        }
-      }
-      
-      const data = await loadResponse.json();
-      console.log("Load model success:", data);
-      
-      setSuccessMessage(data.message || 'Model loaded successfully');
-      setTimeout(() => setSuccessMessage(''), 5000);
-    } catch (err) {
-      console.error('Error in checkAndLoadModel:', err);
-      setError(err.message || 'Error connecting to server');
-    } finally {
-      setIsLoading(false);
-    }
   };
 
   // Add an authentication check function
@@ -746,21 +675,6 @@ const Home = () => {
           {error}
         </div>
       )}
-      
-      {isLoading && (
-        <div className="loading-indicator">
-          <div className="spinner"></div>
-          <p>Loading model, please wait...</p>
-        </div>
-      )}
-      
-      <button
-        className="load-model-button"
-        onClick={checkAndLoadModel}
-        disabled={isLoading}
-      >
-        {isLoading ? 'Loading...' : 'Load Model'}
-      </button>
     </div>
   );
 };
