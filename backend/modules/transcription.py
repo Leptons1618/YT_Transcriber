@@ -50,10 +50,8 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
         from faster_whisper import WhisperModel
         model_path = get_model_path("faster-whisper")
         
-        # Initialize the model with optimized settings
         logger.info(f"Loading Faster-Whisper {model_size} model")
         try:
-            # Optimize VRAM usage with compute_type and better options
             faster_model = WhisperModel(
                 model_size, 
                 device="cuda", 
@@ -69,11 +67,14 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
             segment_count = 0
             last_log_time = time.time()
             
+            # Set language to None for auto-detection if it's empty
+            language_param = None if not language else language
+            
             # Process segments with optimization options and language
             for segment in faster_model.transcribe(
                 audio_path,
                 beam_size=5,
-                language=language,  # Add language parameter 
+                language=language_param,  # Use modified language parameter
                 task="transcribe",
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500),

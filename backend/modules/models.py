@@ -103,7 +103,7 @@ def load_summarizer(model_name=None):
     
     # Use default if none specified
     if not model_name or model_name not in available_models:
-        model_name = "bart-large-cnn"
+        model_name = "facebook/bart-large-cnn"
     
     logger.info(f"Loading summarization model: {model_name}")
     

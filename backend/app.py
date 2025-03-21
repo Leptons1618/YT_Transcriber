@@ -49,6 +49,8 @@ def transcribe_video():
         model_type = data.get('model_type', 'whisper')
         model_size = data.get('model_size', 'medium')
         language = data.get('language')  # Add language parameter
+        if language == '':
+            language = None
         
         # Improved validation for YouTube URLs
         import re
