@@ -5,6 +5,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Add global variable declaration at the top of the file
+transcription_model = None
+transcription_metadata = {}
+
 class ModelRegistry:
     _instance = None
     
@@ -61,14 +65,23 @@ class ModelRegistry:
 registry = ModelRegistry()
 
 # Export functions that use the singleton
-def store_transcription_model(model, model_type, model_size):
-    return registry.store_model(model, model_type, model_size)
+def store_transcription_model(model, metadata):
+    """Store a transcription model in the registry"""
+    global transcription_model, transcription_metadata
+    transcription_model = model
+    transcription_metadata = metadata
+    logger.info(f"Model stored successfully: {metadata.get('type')}/{metadata.get('size')}")
+    logger.info(f"Model object ID: {id(model)}")
 
 def get_transcription_model():
-    return registry.get_model()
+    """Get the currently loaded transcription model"""
+    global transcription_model
+    return transcription_model
 
 def get_transcription_metadata():
-    return registry.get_metadata()
+    """Get metadata for the currently loaded transcription model"""
+    global transcription_metadata
+    return transcription_metadata
 
 def store_summarizer_model(model):
     return registry.store_summarizer(model)

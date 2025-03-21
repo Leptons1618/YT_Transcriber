@@ -9,7 +9,7 @@ from nltk.tokenize import sent_tokenize
 from config import logger, active_jobs, transcription_logs, AUDIO_DIR, TRANSCRIPT_DIR, NOTES_DIR
 from modules.utils import append_transcription_log, formatTime, get_audio_duration, get_model_path
 from modules.summarization import generate_notes
-import config
+from modules.debug import trace_function, debug_logger
 from modules.model_registry import get_transcription_model, get_transcription_metadata
 
 def download_youtube_audio(youtube_url, job_id):
@@ -31,112 +31,45 @@ def download_youtube_audio(youtube_url, job_id):
     logger.info(f"Job {job_id}: Audio downloaded successfully")
     return os.path.join(AUDIO_DIR, f"{job_id}.mp3")
 
-def transcribe_audio(audio_path, job_id, language=None):
-    """Transcribe an audio file using the configured model"""
+def transcribe_audio(audio_path, job_id=None, language=None):
+    """Transcribe audio using the model from registry"""
     try:
-        logger.info(f"Transcribing audio for job {job_id} with language={language}")
-        
-        # Get audio duration
-        from pydub import AudioSegment
-        audio = AudioSegment.from_file(audio_path)
-        duration_seconds = len(audio) / 1000.0
-        logger.info(f"Audio duration: {duration_seconds:.2f} seconds")
-        
-        # Get the transcription model with debug logs
-        logger.info("Attempting to retrieve model from registry")
+        # Get model from registry
         model = get_transcription_model()
-        
-        # Debug logging about the model
-        if model is not None:
-            logger.info(f"Retrieved model from registry. Model ID: {id(model)}")
-        else:
-            logger.error("Model retrieval returned None")
+        if model is None:
+            raise Exception("No transcription model loaded")
             
         metadata = get_transcription_metadata()
-        logger.info(f"Model metadata from registry: {metadata}")
-        
-        if model is None:
-            errorMsg = "No Whisper model loaded. Please configure and load a model first."
-            logger.error(errorMsg)
-            active_jobs[job_id]["status"] = "error"
-            active_jobs[job_id]["error"] = errorMsg
-            raise Exception(errorMsg)
-        
-        # Process based on model type
         model_type = metadata.get('type')
+        
+        logger.info(f"Transcribing audio with {model_type} model from {audio_path}, language: {language or 'auto'}")
+        
+        if not os.path.exists(audio_path):
+            logger.error(f"Audio file not found: {audio_path}")
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        
+        # Extract job_id from audio path if not provided
+        if job_id is None:
+            job_id = os.path.basename(audio_path).split('.')[0]
+        
+        append_transcription_log(job_id, "Transcription started...", transcription_logs)
+        
+        # Get audio duration for progress reporting
+        audio_duration = get_audio_duration(audio_path)
+        
+        metadata = get_transcription_metadata()
+        model_type = metadata.get('type', model_type)
         logger.info(f"Processing with model type: {model_type}")
-        
-        if model_type == "whisper":
-            logger.info("Using standard Whisper model for transcription")
-            
-            # Transcribe with Whisper
-            transcript_options = {}
-            if language:
-                transcript_options["language"] = language
-                
-            logger.info(f"Starting Whisper transcription with options: {transcript_options}")
-            result = model.transcribe(audio_path, **transcript_options)
-            logger.info("Whisper transcription completed successfully")
-            
-            # Process result...
-            # ...existing code...
-            
-        elif model_type == "faster-whisper":
-            logger.info("Using Faster-Whisper model for transcription")
-            
-            # Set language if specified
-            language_option = language if language else None
-            logger.info(f"Using language option: {language_option}")
-            
-            # Transcribe with Faster-Whisper
-            logger.info("Starting Faster-Whisper transcription")
-            segments, info = model.transcribe(audio_path, language=language_option)
-            logger.info(f"Faster-Whisper transcription completed. Info: {info}")
-            
-            # Process segments...
-            # ...existing code...
-            
-        else:
-            errorMsg = f"Unknown model type: {model_type}"
-            logger.error(errorMsg)
-            active_jobs[job_id]["status"] = "error"
-            active_jobs[job_id]["error"] = errorMsg
-            raise Exception(errorMsg)
-        
-        # ...existing code...
-        
-    except Exception as e:
-        logger.error(f"Error transcribing audio: {str(e)}")
-        logger.exception(e)  # Log full traceback
-        active_jobs[job_id]["status"] = "error"
-        active_jobs[job_id]["error"] = str(e)
-        raise
 
-def transcribe_audio(audio_path, model_type="whisper", model_size="medium", language=None):
-    """Transcribe audio using the specified model and language"""
-    global transcription_model, current_whisper_model_size
-    logger.info(f"Transcribing audio with {model_type} model ({model_size}) from {audio_path}, language: {language or 'auto'}")
-    
-    if not os.path.exists(audio_path):
-        logger.error(f"Audio file not found: {audio_path}")
-        raise FileNotFoundError(f"Audio file not found: {audio_path}")
-    
-    # Extract job_id and log the start of transcription
-    job_id = os.path.basename(audio_path).split('.')[0]
-    append_transcription_log(job_id, "Transcription started...", transcription_logs)
-    
-    # Get audio duration for progress reporting
-    audio_duration = get_audio_duration(audio_path)
-
-    if model_type == "faster-whisper":
-        from faster_whisper import WhisperModel
-        model_path = get_model_path("faster-whisper")
-        
-        logger.info(f"Loading Faster-Whisper {model_size} model")
-        try:
+        if model_type == "faster-whisper":
+            from faster_whisper import WhisperModel
+            model_path = get_model_path("faster-whisper")
+            model_size = metadata.get('size', 'medium')
+            
+            logger.info(f"Loading Faster-Whisper model")
             faster_model = WhisperModel(
                 model_size, 
-                device="cuda", 
+                device="cuda" if torch.cuda.is_available() else "cpu", 
                 compute_type="float16", 
                 download_root=model_path,
                 cpu_threads=4,
@@ -144,7 +77,6 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
             )
             
             # Use efficient batched processing
-            logger.info(f"Starting transcription for job {job_id}")
             segments = []
             segment_count = 0
             last_log_time = time.time()
@@ -152,11 +84,11 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
             # Set language to None for auto-detection if it's empty
             language_param = None if not language else language
             
-            # Process segments with optimization options and language
+            # Process segments with optimization options
             for segment in faster_model.transcribe(
                 audio_path,
                 beam_size=5,
-                language=language_param,  # Use modified language parameter
+                language=language_param,
                 task="transcribe",
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500),
@@ -164,7 +96,7 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
                 segment_count += 1
                 segments.append(segment)
                 
-                # Format and log each segment but don't flood logs
+                # Format and log each segment
                 formatted_time = formatTime(segment.start)
                 log_message = f"{formatted_time} - {segment.text}"
                 append_transcription_log(job_id, log_message, transcription_logs)
@@ -182,33 +114,21 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
             transcript = " ".join([s.text for s in segments])
             formatted_segments = [{"text": s.text, "start": s.start, "end": s.end} for s in segments]
             return transcript, formatted_segments
-        
-        except Exception as e:
-            logger.error(f"Error in transcription: {str(e)}")
-            raise
-    
-    else:
-        # For OpenAI Whisper model
-        if config.transcription_model is None:
-            errorMsg = "No Whisper model loaded. Please configure and load a model first."
-            logger.error(errorMsg)
-            raise Exception(errorMsg)
-        
-        # Start transcription
-        logger.info(f"Starting OpenAI Whisper transcription for job {job_id}")
-        append_transcription_log(job_id, "Starting OpenAI Whisper transcription...", transcription_logs)
-        
-        try:
-            # Use the already loaded model with optimized settings
-            result = config.transcription_model.transcribe(
+            
+        else:  # OpenAI Whisper model
+            logger.info(f"Starting OpenAI Whisper transcription for job {job_id}")
+            append_transcription_log(job_id, "Starting OpenAI Whisper transcription...", transcription_logs)
+            
+            # Use the model with optimized settings
+            result = model.transcribe(
                 audio_path,
                 fp16=True,
                 beam_size=5,
                 best_of=5,
-                language=language  # Add language parameter
+                language=language
             )
             
-            # Log some segments for UI display without flooding logs
+            # Log segments for UI display
             total_segments = len(result["segments"])
             log_interval = max(1, total_segments // 20)  # log ~20 segments
             
@@ -221,12 +141,11 @@ def transcribe_audio(audio_path, model_type="whisper", model_size="medium", lang
             logger.info(f"Job {job_id}: Whisper transcription complete with {total_segments} segments")
             return result["text"], result["segments"]
             
-        except Exception as e:
-            logger.error(f"Error in Whisper transcription: {str(e)}")
-            raise
-
-# Import our new debug module
-from modules.debug import trace_function, debug_logger
+    except Exception as e:
+        error_msg = f"Error in transcription: {str(e)}"
+        logger.error(error_msg)
+        logger.exception(e)  # Log full traceback
+        raise
 
 @trace_function  # Add tracing to this function
 def process_video(youtube_url, job_id, language=None):

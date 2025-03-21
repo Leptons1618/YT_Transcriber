@@ -16,6 +16,7 @@ from modules.model_registry import (
     store_summarizer_model, 
     get_summarizer_model
 )
+from faster_whisper import WhisperModel
 
 # Set CUDA memory allocation configuration - update the existing setting
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
@@ -66,37 +67,40 @@ def load_whisper_model(model_size="medium"):
         return False, f"Error loading Whisper model: {str(e)}"
 
 def verify_faster_whisper_model(model_size="medium"):
-    """Verify a Faster-Whisper model is available and prepare it for later use"""
+    """Verify Faster-Whisper model loading and functionality"""
     try:
-        # Just verify that the model can be loaded
-        from faster_whisper import WhisperModel
-        
-        # Setup model options
-        compute_type = "float16" 
-        if model_size in ["tiny", "base"]:
-            compute_type = "int8"
-        
         logger.info(f"Verifying Faster-Whisper {model_size} model")
-        # Create the model
-        model = WhisperModel(model_size, device="cuda", compute_type=compute_type)
         
-        # Store in registry with detailed logging
+        # Create model instance
+        model = WhisperModel(
+            model_size,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            compute_type="float16",
+            download_root=get_model_path("faster-whisper")
+        )
+        
+        # Store model in registry with metadata
+        metadata = {
+            "type": "faster-whisper",
+            "size": model_size,
+            "device": "cuda" if torch.cuda.is_available() else "cpu"
+        }
+        
         logger.info(f"Storing Faster-Whisper {model_size} model in registry")
-        store_transcription_model(model, 'faster-whisper', model_size)
+        store_transcription_model(model, metadata)
         
-        # Verify model is retrievable
+        # Verify model is stored
         test_model = get_transcription_model()
-        if test_model is not None:
-            logger.info(f"Model successfully verified in registry. ID: {id(test_model)}")
-        else:
-            logger.error("Failed to verify model in registry after storage")
+        if test_model is None:
+            raise Exception("Model not stored in registry")
+            
+        return True, None
         
-        logger.info(f"Verified Faster-Whisper {model_size} model")
-        return True, f"Verified Faster-Whisper {model_size} model"
     except Exception as e:
-        logger.error(f"Error verifying Faster-Whisper model: {str(e)}")
+        error_msg = f"Error verifying Faster-Whisper model: {str(e)}"
+        logger.error(error_msg)
         logger.exception(e)
-        return False, f"Error verifying Faster-Whisper model: {str(e)}"
+        return False, error_msg
 
 def get_available_summarizers():
     """Get available summarizer models"""
