@@ -3,14 +3,14 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams } from 'react-router-dom';
 import { jsPDF } from "jspdf";
 import './TranscriptionView.css';
-// Import icons from React Icons - removed unused imports
+// Import icons from React Icons - added the refresh icon
 import { 
   FiSearch, FiX,
-  FiCheck, FiAlertTriangle 
+  FiCheck, FiAlertTriangle, FiSettings, FiRefreshCw 
 } from 'react-icons/fi';
 import { 
   FaFilePdf, FaFileAlt, FaArrowUp, FaArrowDown, 
-  FaSpinner 
+  FaSpinner, FaPaperPlane, FaClosedCaptioning 
 } from 'react-icons/fa';
 
 const TranscriptionView = () => {
@@ -33,6 +33,29 @@ const TranscriptionView = () => {
   const [transcriptSearch, setTranscriptSearch] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
+  
+  // Add state for Notion modal
+  const [showNotionModal, setShowNotionModal] = useState(false);
+  const [notionToken, setNotionToken] = useState('');
+  const [notionPageId, setNotionPageId] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
+  
+  // Add missing refs
+  const pollIntervalRef = useRef(null);
+  const startTimeRef = useRef(null);
+  
+  // Add new state for tracking export completion
+  const [notionExported, setNotionExported] = useState(false);
+  
+  // Add state for regenerating summary
+  const [isRegeneratingNotes, setIsRegeneratingNotes] = useState(false);
+  const [regenerationError, setRegenerationError] = useState('');
+  
+  // Add state for summarizer model selection
+  const [showModelSelector, setShowModelSelector] = useState(false);
+  const [availableSummarizers, setAvailableSummarizers] = useState({});
+  const [selectedSummarizerModel, setSelectedSummarizerModel] = useState('');
   
   // Extract YouTube Video ID from URL
   const extractYoutubeId = useCallback((url) => {
@@ -75,10 +98,17 @@ const TranscriptionView = () => {
   }, [transcript, currentSegmentIndex, scrollToSegment]);
   
   useEffect(() => {
+    // Add initial log message
+    const timestamp = new Date().toLocaleTimeString();
+    setStatusHistory([`[${timestamp}] Starting transcription process...`]);
+    startTimeRef.current = Date.now();
+    
     // Poll job status
     const checkStatus = async () => {
       try {
-        const response = await fetch(`http://localhost:5000/api/job/${jobId}`);
+        const response = await fetch(`http://localhost:5000/api/job/${jobId}`, {
+          credentials: 'include'  // Add this line
+        });
         if (response.ok) {
           const data = await response.json();
           setJobStatus(data);
@@ -94,8 +124,18 @@ const TranscriptionView = () => {
           // If complete, fetch transcript and notes
           if (data.status === 'complete') {
             fetchTranscriptAndNotes();
+            // Clear polling interval on completion
+            if (pollIntervalRef.current) {
+              clearInterval(pollIntervalRef.current);
+              pollIntervalRef.current = null;
+            }
           } else if (data.status === 'error') {
             setError(data.error || 'An error occurred processing this video');
+            // Clear polling interval on error
+            if (pollIntervalRef.current) {
+              clearInterval(pollIntervalRef.current);
+              pollIntervalRef.current = null;
+            }
           }
         } else {
           setError('Failed to fetch job status');
@@ -109,7 +149,9 @@ const TranscriptionView = () => {
     const fetchTranscriptAndNotes = async () => {
       try {
         // Fetch transcript
-        const transcriptResponse = await fetch(`http://localhost:5000/api/transcript/${jobId}`);
+        const transcriptResponse = await fetch(`http://localhost:5000/api/transcript/${jobId}`, {
+          credentials: 'include'  // Add this line
+        });
         if (transcriptResponse.ok) {
           const transcriptData = await transcriptResponse.json();
           setTranscript(transcriptData);
@@ -122,10 +164,28 @@ const TranscriptionView = () => {
         }
         
         // Fetch notes
-        const notesResponse = await fetch(`http://localhost:5000/api/notes/${jobId}`);
+        const notesResponse = await fetch(`http://localhost:5000/api/notes/${jobId}`, {
+          credentials: 'include'  // Add this line
+        });
         if (notesResponse.ok) {
           const notesData = await notesResponse.json();
           setNotes(notesData);
+          
+          // Log notes received
+          const timestamp = new Date().toLocaleTimeString();
+          setStatusHistory(prev => [
+            ...prev, 
+            `[${timestamp}] Smart notes generated successfully`
+          ]);
+          
+          // Add a final completion message
+          setTimeout(() => {
+            const finalTimestamp = new Date().toLocaleTimeString();
+            setStatusHistory(prev => [
+              ...prev, 
+              `[${finalTimestamp}] All processing complete! Enjoy your transcript.`
+            ]);
+          }, 1000);
         }
       } catch (err) {
         setError('Error fetching transcript data');
@@ -136,15 +196,18 @@ const TranscriptionView = () => {
     checkStatus();
     
     // Poll until complete
-    const interval = setInterval(() => {
+    pollIntervalRef.current = setInterval(() => {
       if (jobStatus.status !== 'complete' && jobStatus.status !== 'error') {
         checkStatus();
-      } else {
-        clearInterval(interval);
       }
     }, 5000);
     
-    return () => clearInterval(interval);
+    return () => {
+      // Cleanup the interval properly
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
   }, [jobId, jobStatus.status, videoId, extractYoutubeId]);
   
   // Initialize YouTube player once we have a video ID
@@ -211,7 +274,7 @@ const TranscriptionView = () => {
     }
   }, []);
   
-  // Log status changes for background display
+  // Calculate and update time estimate
   useEffect(() => {
     if (prevStatusRef.current !== jobStatus.status) {
       setStatusHistory(prev => [...prev, `Status changed to: ${jobStatus.status}`]);
@@ -720,6 +783,9 @@ const TranscriptionView = () => {
     
     return (
       <>
+        {/* Add transcript header with language info */}
+        {renderTranscriptHeader()}
+        
         <div className="transcript-search">
           {renderSearchControls()}
         </div>
@@ -741,6 +807,7 @@ const TranscriptionView = () => {
           <div className="notes-generating">
             <div className="notes-spinner"></div>
             <p>Generating smart notes from transcript...</p>
+            <span className="notes-progress">This may take a minute for longer videos</span>
           </div>
         );
       }
@@ -750,12 +817,51 @@ const TranscriptionView = () => {
     return (
       <div className="notes-container">
         <div className="notes-section">
-          <h3>Summary</h3>
-          <p>{notes.summary}</p>
+          <div className="notes-header">
+            <h3>Summary</h3>
+            <div className="notes-actions">
+              <button 
+                className="model-select-button"
+                onClick={() => setShowModelSelector(true)}
+                title="Select summarizer model"
+                disabled={isRegeneratingNotes}
+              >
+                <FiSettings />
+              </button>
+              <button 
+                className="regenerate-button"
+                onClick={regenerateNotes}
+                disabled={isRegeneratingNotes}
+                title="Generate new summary from transcript"
+              >
+                {isRegeneratingNotes ? (
+                  <>
+                    <div className="spinner"></div>
+                    <span>Regenerating...</span>
+                  </>
+                ) : (
+                  <>
+                    <FiRefreshCw />
+                    Generate Again
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+          
+          {regenerationError && (
+            <div className="regeneration-error">{regenerationError}</div>
+          )}
+          
+          <div className="summary-content">
+            <p>{notes.summary}</p>
+          </div>
         </div>
         
         <div className="notes-section">
-          <h3>Key Points</h3>
+          <div className="notes-header">
+            <h3>Key Points</h3>
+          </div>
           <ul className="key-points-list">
             {notes.key_points.map((point, index) => (
               <li key={index}>{point}</li>
@@ -765,7 +871,7 @@ const TranscriptionView = () => {
       </div>
     );
   };
-  
+
   // Revamped function to render processing logs with animation
   const renderProcessingLogs = () => {
     return (
@@ -845,6 +951,54 @@ const TranscriptionView = () => {
     );
   };
   
+  // Add the SRT conversion and download function
+  const exportAsSRT = () => {
+    if (!transcript || !transcript.segments) {
+      alert('No transcript available to export');
+      return;
+    }
+  
+    // Convert time from seconds to SRT format: HH:MM:SS,mmm
+    const formatSRTTime = (timeInSeconds) => {
+      const hours = Math.floor(timeInSeconds / 3600);
+      const minutes = Math.floor((timeInSeconds % 3600) / 60);
+      const seconds = Math.floor(timeInSeconds % 60);
+      const milliseconds = Math.floor((timeInSeconds % 1) * 1000);
+      
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')},${milliseconds.toString().padStart(3, '0')}`;
+    };
+  
+    let srtContent = '';
+    transcript.segments.forEach((segment, index) => {
+      // Calculate end time (use next segment's start time or add 2 seconds if it's the last segment)
+      const endTime = transcript.segments[index + 1] 
+        ? transcript.segments[index + 1].start 
+        : segment.start + (segment.end ? segment.end - segment.start : 2);
+      
+      // Format as SRT entry
+      srtContent += `${index + 1}\n`;
+      srtContent += `${formatSRTTime(segment.start)} --> ${formatSRTTime(endTime)}\n`;
+      srtContent += `${segment.text}\n\n`;
+    });
+  
+    // Create a safe filename from video title
+    const safeTitle = transcript?.title?.replace(/[^a-z0-9]/gi, '_').substring(0, 20) || 'transcript';
+    const fileName = `${safeTitle}_${new Date().toISOString().slice(0,10)}.srt`;
+    
+    // Create and download the file
+    const blob = new Blob([srtContent], { type: "text/plain;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    link.click();
+    
+    // Clean up
+    setTimeout(() => {
+      URL.revokeObjectURL(link.href);
+    }, 100);
+  };
+  
+  // Modified renderExportButtons to include Notion export button with disabled state
   const renderExportButtons = () => (
     <div className="export-options">
       <button className="export-button" onClick={exportAsPDF}>
@@ -855,6 +1009,165 @@ const TranscriptionView = () => {
         <FaFileAlt className="export-icon" />
         Export as TXT
       </button>
+      <button className="export-button" onClick={exportAsSRT}>
+        <FaClosedCaptioning className="export-icon" />
+        Export as SRT
+      </button>
+      <button 
+        className={`export-button notion-button ${notionExported ? 'exported' : ''}`} 
+        onClick={sendToNotion}
+        disabled={notionExported}
+      >
+        <FaPaperPlane className="export-icon" />
+        {notionExported ? 'Exported to Notion' : 'Send to Notion'}
+      </button>
+    </div>
+  );
+
+  // Function to send transcript and notes to Notion
+  const sendToNotion = async () => {
+    // Show the modal to get Notion credentials
+    setShowNotionModal(true);
+  };
+  
+  // Function to handle the actual export to Notion
+  const handleNotionExport = async () => {
+    // If using credentials from modal
+    if (!useStoredCredentials && (!notionToken || !notionPageId)) {
+      setExportError('Please provide both Notion token and page ID');
+      return;
+    }
+    
+    setIsExporting(true);
+    setExportError('');
+    
+    try {
+      // Prepare content for Notion
+      const content = {
+        title: transcript?.title || "YouTube Video Transcript",
+        url: transcript?.youtube_url || "",
+        channel: transcript?.channel || "Unknown",
+        summary: notes?.summary || "",
+        keyPoints: notes?.key_points || [],
+        transcript: transcript?.segments?.map(segment => ({
+          time: formatTime(segment.start),
+          text: segment.text
+        })) || []
+      };
+      
+      // Make API call to backend to send to Notion
+      const response = await fetch('http://localhost:5000/api/export/notion', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          notionToken: useStoredCredentials ? null : notionToken,
+          notionPageId: useStoredCredentials ? null : notionPageId,
+          content
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        // Mark export as complete
+        setNotionExported(true);
+        
+        // If there's a page URL, offer to open it
+        if (data.pageUrl) {
+          const openPage = window.confirm('Successfully exported to Notion! Would you like to open the page?');
+          if (openPage) {
+            window.open(data.pageUrl, '_blank');
+          }
+        }
+        setShowNotionModal(false);
+      } else {
+        setExportError(data.error || 'Failed to export to Notion');
+      }
+    } catch (err) {
+      console.error('Error exporting to Notion:', err);
+      setExportError('Error connecting to server');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Add state for using stored credentials
+  const [useStoredCredentials, setUseStoredCredentials] = useState(true);
+
+  // Render the Notion Export Modal
+  const renderNotionModal = () => (
+    <div className={`notion-modal-overlay ${showNotionModal ? 'show' : ''}`} onClick={() => setShowNotionModal(false)}>
+      <div className="notion-modal" onClick={e => e.stopPropagation()}>
+        <h3>Export to Notion</h3>
+        
+        <div className="notion-form">
+          <div className="credentials-option">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={useStoredCredentials}
+                onChange={(e) => setUseStoredCredentials(e.target.checked)}
+              />
+              Use credentials from environment variables
+            </label>
+          </div>
+          
+          {!useStoredCredentials && (
+            <>
+              <div className="form-group">
+                <label htmlFor="notion-token">Notion Integration Token:</label>
+                <input 
+                  id="notion-token"
+                  type="password" 
+                  value={notionToken} 
+                  onChange={(e) => setNotionToken(e.target.value)}
+                  placeholder="secret_xxx..."
+                />
+                <small>Create an integration at <a href="https://www.notion.so/my-integrations" target="_blank" rel="noopener noreferrer">notion.so/my-integrations</a></small>
+              </div>
+              
+              <div className="form-group">
+                <label htmlFor="notion-page">Parent Page ID:</label>
+                <input 
+                  id="notion-page"
+                  type="text" 
+                  value={notionPageId} 
+                  onChange={(e) => setNotionPageId(e.target.value)}
+                  placeholder="Parent page ID where new page will be created"
+                />
+                <small>Found in your parent page URL: notion.so/Page-Name-<b>pageId</b></small>
+              </div>
+            </>
+          )}
+
+          <div className="form-info">
+            <p>
+              <i className="info-icon"></i> 
+              A new Notion page will be created with the video title "{transcript?.title || "YouTube Video Transcript"}"
+            </p>
+          </div>
+          
+          {exportError && <div className="notion-error">{exportError}</div>}
+          
+          <div className="notion-actions">
+            <button 
+              className="notion-cancel" 
+              onClick={() => setShowNotionModal(false)}
+            >
+              Cancel
+            </button>
+            <button 
+              className="notion-submit" 
+              onClick={handleNotionExport}
+              disabled={isExporting || (!useStoredCredentials && (!notionToken || !notionPageId))}
+            >
+              {isExporting ? 'Exporting...' : 'Export'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 
@@ -903,6 +1216,206 @@ const TranscriptionView = () => {
         return <FaSpinner className="status-icon spinning" />;
     }
   };
+
+  // Add language display in transcript view with enhanced styling
+  const renderTranscriptHeader = () => {
+    if (!transcript) return null;
+    
+    return (
+      <div className="transcript-header">
+        <h3>{transcript.title || "Transcript"}</h3>
+        {transcript.channel && <p className="transcript-channel">Channel: {transcript.channel}</p>}
+        {transcript.language && (
+          <div className="language-badge">
+            <span className="language-label">Language:</span>
+            <span className="language-name">{getLanguageName(transcript.language)}</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Helper function to display language names
+  const getLanguageName = (code) => {
+    const languages = {
+      'en': 'English',
+      'hi': 'Hindi',
+      'bn': 'Bengali',
+      // Add more languages as needed
+    };
+    return languages[code] || code;
+  };
+
+  // Add regenerateNotes function before the return statement
+const regenerateNotes = async () => {
+  setIsRegeneratingNotes(true);
+  setRegenerationError('');
+  
+  // Close model selector immediately for better UX
+  setShowModelSelector(false);
+  
+  try {
+    const response = await fetch(`http://localhost:5000/api/regenerate_notes/${jobId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: selectedSummarizerModel || undefined
+      }),
+    });
+    
+    if (response.ok) {
+      const newNotes = await response.json();
+      setNotes(newNotes);
+      // Show success message or notification here if desired
+    } else {
+      const errorData = await response.json();
+      setRegenerationError(errorData.error || 'Failed to regenerate notes');
+    }
+  } catch (err) {
+    setRegenerationError('Error connecting to server');
+    console.error(err);
+  } finally {
+    setIsRegeneratingNotes(false);
+  }
+};
+
+// Add renderModelSelectorModal function before the return statement
+const renderModelSelectorModal = () => {
+  if (!showModelSelector) return null;
+  
+  // Create a sorted list of models with specialized ones first
+  const sortedModels = Object.keys(availableSummarizers).sort((a, b) => {
+    // Put models for current transcript language first
+    const aIsSpecialized = transcript?.language && availableSummarizers[a]?.languages?.includes(transcript.language);
+    const bIsSpecialized = transcript?.language && availableSummarizers[b]?.languages?.includes(transcript.language);
+    
+    if (aIsSpecialized && !bIsSpecialized) return -1;
+    if (!aIsSpecialized && bIsSpecialized) return 1;
+    
+    // Then sort alphabetically
+    return a.localeCompare(b);
+  });
+  
+  // Helper to get display name for model
+  const getModelDisplayName = (modelId) => {
+    if (modelId.includes('/')) {
+      const parts = modelId.split('/');
+      return `${parts[1]} (${parts[0]})`;
+    }
+    return modelId;
+  };
+  
+  return (
+    <div className="model-selector-overlay" onClick={() => setShowModelSelector(false)}>
+      <div className="model-selector-modal" onClick={e => e.stopPropagation()}>
+        <div className="model-selector-header">
+          <h3>Select Summarization Model</h3>
+          <button className="model-selector-close" onClick={() => setShowModelSelector(false)}>
+            <FiX />
+          </button>
+        </div>
+        
+        <div className="model-selector-content">
+          <div className="model-selector-description">
+            Choose a model to generate summaries and key points from your transcript.
+            {transcript?.language && transcript.language !== 'en' && (
+              <div className="language-notice">
+                <span className="language-icon" role="img" aria-label="Globe">🌐</span>
+                <span>Your transcript is in {getLanguageName(transcript.language)}. Models with a star (★) are optimized for this language.</span>
+              </div>
+            )}
+          </div>
+          
+          <div className="model-selector-list">
+            {sortedModels.map(modelId => {
+              const model = availableSummarizers[modelId];
+              const isSpecialized = transcript?.language && model?.languages?.includes(transcript.language);
+              
+              return (
+                <div 
+                  key={modelId}
+                  className={`model-option ${selectedSummarizerModel === modelId ? 'selected' : ''} ${isSpecialized ? 'specialized' : ''}`}
+                  onClick={() => setSelectedSummarizerModel(modelId)}
+                >
+                  <div className="model-option-header">
+                    <div className="model-option-name">
+                      {getModelDisplayName(modelId)}
+                      {isSpecialized && <span className="specialized-badge">★</span>}
+                    </div>
+                    {model.size && <div className="model-option-size">{model.size}</div>}
+                  </div>
+                  <div className="model-option-description">{model.description}</div>
+                  {isSpecialized && (
+                    <div className="model-language-support">
+                      Optimized for {getLanguageName(transcript.language)}
+                    </div>
+                  )}
+                  {model.languages && model.languages.length > 0 && !isSpecialized && (
+                    <div className="model-language-support-general">
+                      Supports multiple languages
+                    </div>
+                  )}
+                  <div className="model-option-radio">
+                    <div className={`radio-button ${selectedSummarizerModel === modelId ? 'checked' : ''}`}></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        
+        <div className="model-selector-footer">
+          <button 
+            className="model-selector-cancel" 
+            onClick={() => setShowModelSelector(false)}
+          >
+            Cancel
+          </button>
+          <button 
+            className="model-selector-apply" 
+            onClick={regenerateNotes}
+            disabled={isRegeneratingNotes}
+          >
+            {isRegeneratingNotes ? (
+              <>
+                <div className="spinner"></div>
+                <span>Regenerating...</span>
+              </>
+            ) : (
+              <>
+                <FiRefreshCw />
+                <span>Apply & Regenerate</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Also add a useEffect to load available summarizers
+useEffect(() => {
+  const fetchSummarizers = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/config', {
+        credentials: 'include'  // Add this line
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.available_summarizers) {
+          setAvailableSummarizers(data.available_summarizers);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching summarizer models:', error);
+    }
+  };
+  
+  fetchSummarizers();
+}, []); // Run once on component mount
 
   return (
     <div className="transcription-view">
@@ -958,6 +1471,10 @@ const TranscriptionView = () => {
           )}
         </>
       )}
+      {/* Add modal at the end of the component */}
+      {renderNotionModal()}
+      {renderModelSelectorModal()}
+      
       <footer style={{ marginTop: '20px', textAlign: 'center', fontSize: '0.9rem', color: '#6b7280' }}>
         Created by Lept0n5
       </footer>

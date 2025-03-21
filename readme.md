@@ -75,19 +75,32 @@ npm install react-router-dom jspdf
 
 ## Running the Application
 
-1. Start the backend server:
-
+### On Linux/Mac:
 ```bash
-cd ../backend
-# Activate virtual environment if not already active
+# Start backend
+cd backend
 python app.py
+
+# In a new terminal, start frontend
+cd frontend
+npm start
 ```
 
-2. In a separate terminal, start the frontend development server:
+### On Windows:
+Option 1: Use the provided batch script
+```
+start-windows.bat
+```
 
-```bash
-cd ../frontend
-npm start
+Option 2: Run commands manually
+```
+# Start backend
+cd backend
+python app.py
+
+# In a new terminal, start frontend
+cd frontend
+npm run start-win
 ```
 
 3. Access the application in your browser at `http://localhost:3000`
@@ -202,6 +215,35 @@ youtube-transcriber/
 7. **/api/load_model:** POST request to load a specific model
 8. **/api/logs/<job_id>:** GET request to retrieve job logs
 9. **/api/save_theme:** POST request to save theme settings
+
+## Notion Integration
+
+This app supports exporting transcripts and notes directly to Notion. There are two ways to set up the Notion integration:
+
+### Environment Variables (Recommended)
+
+1. Rename `.env.example` to `.env` in the root directory
+2. Fill in your Notion integration token and parent page ID
+3. Restart the application
+
+### Manual Entry
+
+You can also enter your Notion credentials manually when exporting if you prefer not to store them.
+
+### Setting Up Notion Integration
+
+1. Create a new Notion integration at [notion.so/my-integrations](https://www.notion.so/my-integrations)
+2. Give your integration a name (e.g., "YouTube Transcriber")
+3. Copy the "Internal Integration Token"
+4. In Notion, create or select a parent page where you want new transcripts to be created
+5. Share the parent page with your integration (click "Share" > select your integration)
+6. Copy the page ID from the URL: notion.so/Page-Name-**pageId**
+
+Now you can either:
+- Add these credentials to your `.env` file, or
+- Enter them manually when exporting
+
+When you export to Notion, the app will create a new page with the video title and organize all content there.
 
 ## Demonstration Video
 [YouTube Video Transcriber Demo](https://github.com/Leptons1618/YT_Transcriber/blob/master/YT_Transcriber_Demo.mkv)

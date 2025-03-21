@@ -4,6 +4,7 @@ import './Home.css';
 // Replace the cog gif import with React Icons imports
 import { FiSettings } from 'react-icons/fi';
 import { FaFileAlt, FaChartBar, FaClock, FaSave } from 'react-icons/fa';
+import { debugLog, debugAuth } from '../utils/debugHelper';
 
 const Home = () => {
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -21,6 +22,9 @@ const Home = () => {
   const [summarizerModel, setSummarizerModel] = useState('bart-large-cnn');
   const [availableSummarizers, setAvailableSummarizers] = useState({});
   const [summarizerStatus, setSummarizerStatus] = useState("no summarizer loaded");
+  const [language, setLanguage] = useState(''); // '' means auto-detect
+  const [isLoading, setIsLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
 
   // Enhanced useEffect to fetch model status and configuration on startup
   useEffect(() => {
@@ -52,9 +56,21 @@ const Home = () => {
       .catch(err => console.error("Error loading configuration:", err));
   }, []);
 
+  // Add auth debug on component mount
+  useEffect(() => {
+    debugLog('Home component mounted');
+    debugAuth();
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    
+    // Simplified error logging without localStorage
+    const logError = (message, details) => {
+      console.error("TRANSCRIPTION ERROR:", { message, details });
+      setError(`Error: ${message}`);
+    };
     
     if (!youtubeUrl) {
       setError('Please enter a YouTube URL');
@@ -67,9 +83,22 @@ const Home = () => {
       return;
     }
     
+    // Make sure a model is loaded before submitting
+    if (modelLoadStatus !== "loaded") {
+      setError("Please load a model first before transcribing");
+      return;
+    }
+    
     setIsSubmitting(true);
     
     try {
+      console.log("Sending transcription request with:", {
+        youtube_url: youtubeUrl,
+        model_type: modelType,
+        model_size: modelSize,
+        language: language
+      });
+      
       const response = await fetch('http://localhost:5000/api/transcribe', {
         method: 'POST',
         headers: {
@@ -78,24 +107,75 @@ const Home = () => {
         body: JSON.stringify({ 
           youtube_url: youtubeUrl,
           model_type: modelType,
-          model_size: modelSize
+          model_size: modelSize,
+          language: language
         }),
+        credentials: 'include' // Include credentials for auth
       });
       
-      const data = await response.json();
+      console.log("Transcription response status:", response.status);
+      
+      // Handle unauthorized response specifically
+      if (response.status === 401) {
+        logError('Authentication error', { status: 401 });
+        setError('Your session has expired. Please log in again.');
+        setTimeout(() => navigate('/login'), 2000);
+        return;
+      }
+      
+      // Get response text first
+      const responseText = await response.text();
+      console.log("Raw response:", responseText);
+      
+      let data;
+      
+      // Try to parse as JSON, but keep the original text if it fails
+      try {
+        data = JSON.parse(responseText);
+        console.log("Transcription response data:", data);
+      } catch (parseError) {
+        logError('Failed to parse server response', { responseText, parseError: parseError.message });
+        throw new Error(`Server returned invalid JSON: ${responseText.substring(0, 100)}...`);
+      }
       
       if (response.ok) {
-        navigate(`/view/${data.job_id}`);
+        // Navigate to view page when successful
+        navigate(`/job/${data.job_id}`);
       } else {
+        logError(data.error || 'Failed to submit transcription request', data);
         setError(data.error || 'Failed to submit transcription request');
       }
     } catch (err) {
-      setError('Error connecting to server');
-      console.error(err);
+      logError('Error connecting to server', { message: err.message, stack: err.stack });
+      setError(`Error connecting to server: ${err.message}`);
+      console.error("Full error:", err);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  // Add useEffect for language-based model recommendation
+  useEffect(() => {
+    // When language changes, recommend appropriate summarizer model
+    if (['hi', 'bn'].includes(language)) {
+      // Get the specialized model for this language
+      const recommendedModel = language === 'hi' ? 'ai4bharat/IndicBART' : 'google/mt5-base';
+      
+      // Check if the model is available in our options
+      if (availableSummarizers[recommendedModel]) {
+        // Show a recommendation notification
+        const confirmed = window.confirm(
+          `You've selected ${language === 'hi' ? 'Hindi' : 'Bengali'}. Would you like to use the specialized ${
+            recommendedModel.split('/')[1]
+          } summarization model for better results?`
+        );
+        
+        if (confirmed) {
+          setSummarizerModel(recommendedModel);
+        }
+      }
+    }
+  }, [language, availableSummarizers]);
 
   // Updated saveConfig function: close popup immediately, show loading animation,
   // then update status to loaded on success.
@@ -111,18 +191,33 @@ const Home = () => {
           model_size: modelSize,
           summarizer_model: summarizerModel 
         }),
+        credentials: 'include'  // Add credentials to the request
       });
+      
+      // Handle unauthorized response
+      if (response.status === 401) {
+        console.log("Authentication failed. Redirecting to login...");
+        setError('Your session has expired. Please log in again.');
+        setTimeout(() => navigate('/login'), 2000);
+        setModelLoadStatus("no model loaded");
+        return;
+      }
+      
       const data = await response.json();
       if (response.ok) {
         console.log(data.message);
         setModelLoadStatus("loaded");
         setSummarizerStatus("loaded");
+        setSuccessMessage(data.message || 'Model loaded successfully');
+        setTimeout(() => setSuccessMessage(''), 5000); // Clear after 5 seconds
       } else {
-        alert('Failed to load the model configuration: ' + data.error);
+        setModelLoadStatus("no model loaded");
+        setError(data.error || 'Failed to load model configuration');
       }
     } catch (err) {
-      console.error(err);
-      alert('Error connecting to server');
+      console.error("Error in saveConfig:", err);
+      setModelLoadStatus("no model loaded");
+      setError(err.message || 'Error connecting to server');
     }
   };
 
@@ -167,11 +262,132 @@ const Home = () => {
     }
   };
 
-  // New helper to validate YouTube URLs
+  // New helper to validate YouTube URLs with improved pattern
   const isValidYoutubeUrl = (url) => {
-    const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//;
+    if (!url || url.trim() === '') return false;
+    
+    // More comprehensive regex to handle various YouTube URL formats
+    const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|v\/|embed\/|shorts\/)|youtu\.be\/)/;
     return pattern.test(url.trim());
   };
+
+  // Function to check auth before loading model
+  const checkAndLoadModel = async () => {
+    debugLog('Starting model loading process');
+    debugLog('Current state', { modelType, modelSize, summarizerModel });
+    
+    setIsLoading(true);
+    setError('');
+    
+    try {
+      console.log("Checking authentication...");
+      const authResponse = await fetch('http://localhost:5000/api/check_auth', {
+        credentials: 'include'
+      });
+      
+      console.log("Auth response status:", authResponse.status);
+      const authData = await authResponse.json();
+      console.log("Auth data:", authData);
+      
+      if (!authData.authenticated) {
+        console.log("Not authenticated, redirecting to login");
+        setError('Your session has expired. Please log in again.');
+        setTimeout(() => navigate('/login'), 2000);
+        setIsLoading(false);
+        return;
+      }
+      
+      console.log("Authentication successful, loading model...");
+      
+      // If authenticated, proceed with model loading
+      const loadResponse = await fetch('http://localhost:5000/api/load_model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model_type: modelType,
+          model_size: modelSize,
+          summarizer_model: summarizerModel
+        }),
+        credentials: 'include'
+      });
+      
+      console.log("Load model response status:", loadResponse.status);
+      
+      if (!loadResponse.ok) {
+        const errorText = await loadResponse.text();
+        console.error("Load model error response:", errorText);
+        
+        try {
+          const errorData = JSON.parse(errorText);
+          throw new Error(errorData.message || 'Failed to load model');
+        } catch (parseError) {
+          throw new Error(`Failed to load model: ${errorText || loadResponse.statusText}`);
+        }
+      }
+      
+      const data = await loadResponse.json();
+      console.log("Load model success:", data);
+      
+      setSuccessMessage(data.message || 'Model loaded successfully');
+      setTimeout(() => setSuccessMessage(''), 5000);
+    } catch (err) {
+      console.error('Error in checkAndLoadModel:', err);
+      setError(err.message || 'Error connecting to server');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Add an authentication check function
+  // eslint-disable-next-line no-unused-vars
+  const checkAuthentication = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/check_auth', {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        return data.authenticated;
+      }
+      return false;
+    } catch (error) {
+      console.error('Auth check error:', error);
+      return false;
+    }
+  };
+  
+  // Fetch config when component mounts
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/config', {
+          credentials: 'include'
+        });
+        
+        if (response.ok) {
+          const config = await response.json();
+          setModelType(config.model_type || 'faster-whisper');
+          setModelSize(config.model_size || 'base');
+          setSummarizerModel(config.summarizer_model || 'bart-large-cnn');
+        } else {
+          // Handle non-OK response
+          if (response.status === 401) {
+            // Unauthorized - redirect to login
+            navigate('/login');
+          } else {
+            console.error('Error fetching config:', response.statusText);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch config:', error);
+      }
+    };
+
+    fetchConfig();
+  }, [navigate]);
 
   return (
     <div className="home-container">
@@ -210,7 +426,9 @@ const Home = () => {
               <FiSettings className="config-icon" size={24} />
             </button>
           </div>
-          {error && <p className="error-message">{error}</p>}
+          {error && (
+            <p className="error-message">{error}</p>
+          )}
         </form>
 
         {/* Display loading/loaded model status */}
@@ -219,30 +437,38 @@ const Home = () => {
 
       <div className="features-section">
         <h2 style={{ fontSize: '1.5rem' }}>Advanced Features</h2>
-        <div className="features-grid">
+        <div className="features-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
           <div className="feature-card">
             {/* Replace emoji with icon */}
             <div className="feature-icon"><FaFileAlt /></div>
-            <h3 style={{ fontSize: '1.2rem' }}>Accurate Transcription</h3>
+            <h3 style={{ fontSize: '1.1rem' }}>Accurate Transcription</h3>
             <p>Powered by OpenAI's Whisper, our system delivers high-quality transcriptions</p>
           </div>
           <div className="feature-card">
             {/* Replace emoji with icon */}
             <div className="feature-icon"><FaChartBar /></div>
-            <h3 style={{ fontSize: '1.2rem' }}>Smart Notes</h3>
+            <h3 style={{ fontSize: '1.1rem' }}>Smart Notes</h3>
             <p>AI-generated notes that capture key points and summarize content</p>
           </div>
           <div className="feature-card">
             {/* Replace emoji with icon */}
             <div className="feature-icon"><FaClock /></div>
-            <h3 style={{ fontSize: '1.2rem' }}>Time-Stamped</h3>
+            <h3 style={{ fontSize: '1.1rem' }}>Time-Stamped</h3>
             <p>Navigate through transcripts with precise time markers</p>
           </div>
           <div className="feature-card">
             {/* Replace emoji with icon */}
             <div className="feature-icon"><FaSave /></div>
-            <h3 style={{ fontSize: '1.2rem' }}>Save & Export</h3>
+            <h3 style={{ fontSize: '1.1rem' }}>Save & Export</h3>
             <p>Download transcripts and notes in multiple formats</p>
+          </div>
+          {/* New Multilingual Support Card */}
+          <div className="feature-card multilingual-card">
+            <div className="feature-icon">
+              <span role="img" aria-label="Globe">🌐</span>
+            </div>
+            <h3 style={{ fontSize: '1.1rem' }}>Multilingual Support</h3>
+            <p>Enhanced support for Hindi and Bengali with specialized AI models</p>
           </div>
         </div>
       </div>
@@ -305,80 +531,126 @@ const Home = () => {
             background: 'white',
             padding: '30px',
             borderRadius: '12px',
-            width: '480px',  // Same width for both model types
-            boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
+            width: '550px',  // Increased from 520px for more horizontal space
+            maxHeight: '90vh',  // Increased from 85vh to 90vh for more vertical space
+            overflow: 'auto',  // Added scrolling if needed
+            boxShadow: '0 8px 24px rgba(0,0,0,0.2)', // Enhanced shadow
             textAlign: 'center'
           }}>
             <h2 style={{ fontSize: '1.3rem', marginBottom: '20px' }}>Model Configuration</h2>
-            <div style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <label style={{ marginRight: '10px', fontSize: '0.9rem', minWidth: '40px' }}>Type:</label>
-              <select 
-                value={modelType} 
-                onChange={(e) => {
-                  setModelType(e.target.value);
-                  // Don't reset size if same model type or if there's a compatible size
-                  if (e.target.value !== modelType) {
-                    setModelSize("tiny"); // Reset size only on model type change
-                  }
-                }}
-              >
-                <option value="whisper">Whisper</option>
-                <option value="faster-whisper">Faster-Whisper</option>
-              </select>
+            
+            {/* Add a consistent container for all config options */}
+            <div className="config-options">
+              {/* Model type selection */}
+              <div className="config-option">
+                <label>Model Type:</label>
+                <select 
+                  value={modelType} 
+                  onChange={(e) => {
+                    setModelType(e.target.value);
+                    // Don't reset size if same model type or if there's a compatible size
+                    if (e.target.value !== modelType) {
+                      setModelSize("tiny"); // Reset size only on model type change
+                    }
+                  }}
+                >
+                  <option value="whisper">Whisper</option>
+                  <option value="faster-whisper">Faster-Whisper</option>
+                </select>
+              </div>
+
+              {/* Model size selection */}
+              <div className="config-option">
+                <label>Model Size:</label>
+                <select 
+                  value={modelSize} 
+                  onChange={(e) => setModelSize(e.target.value)}
+                >
+                  {modelType === 'faster-whisper' ? (
+                    <>
+                      <option value="tiny">tiny</option>
+                      <option value="base">base</option>
+                      <option value="small">small</option>
+                      <option value="medium">medium</option>
+                      <option value="large">large</option>
+                      <option value="turbo">turbo</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="tiny">tiny</option>
+                      <option value="base">base</option>
+                      <option value="small">small</option>
+                      <option value="medium">medium</option>
+                      <option value="turbo">turbo</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
+              {/* Language selection - MOVED FROM OUTSIDE THE MODAL */}
+              <div className="config-option">
+                <label>Language:</label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className={['hi', 'bn'].includes(language) ? 'specialized-language' : ''}
+                >
+                  <option value="">Auto Detect</option>
+                  <option value="en">English</option>
+                  <option value="hi" className="specialized-option">Hindi ★</option>
+                  <option value="bn" className="specialized-option">Bengali ★</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="ja">Japanese</option>
+                  <option value="zh">Chinese</option>
+                  <option value="ru">Russian</option>
+                </select>
+              </div>
+
+              {/* Summarizer model selection */}
+              <div className="config-option">
+                <label>Summarizer:</label>
+                <select 
+                  value={summarizerModel} 
+                  onChange={(e) => setSummarizerModel(e.target.value)}
+                >
+                  {Object.keys(availableSummarizers).map(key => (
+                    <option key={key} value={key} className={
+                      // Highlight specialized models for current language
+                      (language === 'hi' && availableSummarizers[key].languages?.includes('hi')) ||
+                      (language === 'bn' && availableSummarizers[key].languages?.includes('bn'))
+                        ? 'specialized-option'
+                        : ''
+                    }>
+                      {key.includes('/') ? key.split('/')[1] : key} 
+                      {availableSummarizers[key].languages?.includes(language) && ' ★'}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <label style={{ marginRight: '10px', fontSize: '0.9rem', minWidth: '40px' }}>Size:</label>
-              <select 
-                value={modelSize} 
-                onChange={(e) => setModelSize(e.target.value)}
-              >
-                {modelType === 'faster-whisper' ? (
-                  <>
-                    <option value="tiny">tiny</option>
-                    <option value="base">base</option>
-                    <option value="small">small</option>
-                    <option value="medium">medium</option>
-                    <option value="large">large</option>
-                    <option value="turbo">turbo</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="tiny">tiny</option>
-                    <option value="base">base</option>
-                    <option value="small">small</option>
-                    <option value="medium">medium</option>
-                    <option value="turbo">turbo</option>
-                  </>
-                )}
-              </select>
-            </div>
-            {/* NEW: Summarizer model selection */}
-            <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <label style={{ marginRight: '10px', fontSize: '0.9rem', minWidth: '70px' }}>Summarizer:</label>
-              <select 
-                value={summarizerModel} 
-                onChange={(e) => setSummarizerModel(e.target.value)}
-                style={{ minWidth: '180px' }}
-              >
-                {Object.keys(availableSummarizers).map(key => (
-                  <option key={key} value={key}>{key} ({availableSummarizers[key].size})</option>
-                ))}
-              </select>
-            </div>
+
             {/* Summarizer model info */}
             {availableSummarizers[summarizerModel] && (
-              <div style={{ marginBottom: '15px', fontSize: '0.85rem', color: '#666', textAlign: 'center' }}>
+              <div className="model-info">
                 {availableSummarizers[summarizerModel].description}
+                {availableSummarizers[summarizerModel].languages?.includes(language) && (
+                  <div className="language-match">
+                    <span role="img" aria-label="Star">⭐</span> Optimized for {language === 'hi' ? 'Hindi' : 'Bengali'}
+                  </div>
+                )}
               </div>
             )}
-            <div style={{ marginBottom: '20px', maxHeight: '150px', overflowY: 'auto', fontSize: '0.8rem', textAlign: 'left' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+
+            {/* Model comparison table */}
+            <div style={{ marginTop: '20px' }}>
+              <h3 style={{ fontSize: '1rem' }}>Model Comparison</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem', marginTop: '10px' }}>
                 <thead>
                   <tr>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Size</th>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Params</th>
-                    <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Eng-only</th>
-                    <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Multi</th>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>VRAM</th>
                     <th style={{ borderBottom: '1px solid #ddd', padding: '4px' }}>Speed</th>
                   </tr>
@@ -387,40 +659,30 @@ const Home = () => {
                   <tr>
                     <td style={{ padding: '4px' }}>tiny</td>
                     <td style={{ padding: '4px' }}>39M</td>
-                    <td style={{ padding: '4px' }}>tiny.en</td>
-                    <td style={{ padding: '4px' }}>tiny</td>
                     <td style={{ padding: '4px' }}>~1GB</td>
                     <td style={{ padding: '4px' }}>~10x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>base</td>
                     <td style={{ padding: '4px' }}>74M</td>
-                    <td style={{ padding: '4px' }}>base.en</td>
-                    <td style={{ padding: '4px' }}>base</td>
                     <td style={{ padding: '4px' }}>~1GB</td>
                     <td style={{ padding: '4px' }}>~7x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>small</td>
                     <td style={{ padding: '4px' }}>244M</td>
-                    <td style={{ padding: '4px' }}>small.en</td>
-                    <td style={{ padding: '4px' }}>small</td>
                     <td style={{ padding: '4px' }}>~2GB</td>
                     <td style={{ padding: '4px' }}>~4x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>medium</td>
                     <td style={{ padding: '4px' }}>769M</td>
-                    <td style={{ padding: '4px' }}>medium.en</td>
-                    <td style={{ padding: '4px' }}>medium</td>
                     <td style={{ padding: '4px' }}>~5GB</td>
                     <td style={{ padding: '4px' }}>~2x</td>
                   </tr>
                   <tr>
                     <td style={{ padding: '4px' }}>turbo</td>
                     <td style={{ padding: '4px' }}>809M</td>
-                    <td style={{ padding: '4px' }}>N/A</td>
-                    <td style={{ padding: '4px' }}>turbo</td>
                     <td style={{ padding: '4px' }}>~6GB</td>
                     <td style={{ padding: '4px' }}>~8x</td>
                   </tr>
@@ -428,8 +690,6 @@ const Home = () => {
                     <tr>
                       <td style={{ padding: '4px' }}>large</td>
                       <td style={{ padding: '4px' }}>1550M</td>
-                      <td style={{ padding: '4px' }}>large-v3</td>
-                      <td style={{ padding: '4px' }}>large-v3</td>
                       <td style={{ padding: '4px' }}>~10GB</td>
                       <td style={{ padding: '4px' }}>~1x</td>
                     </tr>
@@ -437,6 +697,7 @@ const Home = () => {
                 </tbody>
               </table>
             </div>
+            
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '20px' }}>
               <button 
                 onClick={saveConfig}
@@ -472,6 +733,34 @@ const Home = () => {
           </div>
         </div>
       )}
+
+      {/* Success, error, and loading messages */}
+      {successMessage && (
+        <div className="success-message">
+          {successMessage}
+        </div>
+      )}
+      
+      {error && (
+        <div className="error-message">
+          {error}
+        </div>
+      )}
+      
+      {isLoading && (
+        <div className="loading-indicator">
+          <div className="spinner"></div>
+          <p>Loading model, please wait...</p>
+        </div>
+      )}
+      
+      <button
+        className="load-model-button"
+        onClick={checkAndLoadModel}
+        disabled={isLoading}
+      >
+        {isLoading ? 'Loading...' : 'Load Model'}
+      </button>
     </div>
   );
 };

@@ -4,6 +4,9 @@ node_modules/
 # Log files
 *.log
 
+# Environment files
+.env
+
 # Build directories
 dist/
 build/
@@ -61,32 +64,6 @@ yarn-error.log*
 Archived/
 Sandbox/
 
-# Ignore all files in the models directory
-# except for the .gitkeep file
-models/*
-!models/.gitkeep
-# Ignore all files in the downloads directory
-# except for the .gitkeep file
-downloads/*
-!downloads/.gitkeep
-# Ignore all files in the logs directory
-# except for the .gitkeep file
-logs/*
-!logs/.gitkeep
-# Ignore all files in the transcripts directory
-# except for
-# the .gitkeep file
-transcripts/*
-!transcripts/.gitkeep
-# Ignore all files in the notes directory
-# except for the .gitkeep file
-notes/*
-!notes/.gitkeep
-# Ignore all files in the node_modules directory
-# except for the .gitkeep file
-node_modules/*
-!node_modules/.gitkeep
-# Ignore all files in the .venv directory
-# except for the .gitkeep file
-.venv/*
-!.venv/.gitkeep
+# Python Environment
+__pycache__/
+*.pyc

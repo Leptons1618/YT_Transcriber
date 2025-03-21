@@ -1,1 +1,1 @@
-{"model_type": "faster-whisper", "model_size": "turbo", "summarizer_model": "bart-large-cnn"}
+{"model_type": "faster-whisper", "model_size": "turbo", "summarizer_model": "bart-large-cnn", "theme": "light"}
