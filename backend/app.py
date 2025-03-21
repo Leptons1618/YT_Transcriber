@@ -73,6 +73,8 @@ def transcribe_video():
         model_type = data.get('model_type', 'whisper')
         model_size = data.get('model_size', 'medium')
         language = data.get('language')
+        if language == '':
+            language = None
         
         logger.info(f"Processing video: {youtube_url} with {model_type}/{model_size}, language: {language}")
         
